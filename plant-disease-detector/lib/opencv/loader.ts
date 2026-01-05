@@ -1,3 +1,5 @@
+// Cargador de OpenCV.js
+
 declare global {
   interface Window {
     cv: any;
@@ -5,66 +7,90 @@ declare global {
   }
 }
 
-let cvReady = false;
-let cvPromise: Promise<any> | null = null;
+let cvInstance: any = null;
+let loadPromise: Promise<any> | null = null;
+let isLoading = false;
 
+const OPENCV_CDN_URL = 'https://docs.opencv.org/4.8.0/opencv.js';
+
+/**
+ * Carga OpenCV.js dinámicamente
+ */
 export async function loadOpenCV(): Promise<any> {
-  // Solo ejecutar en cliente
-  if (typeof window === 'undefined') {
-    throw new Error('OpenCV.js solo puede cargarse en el navegador');
+  // Si ya está cargado, retornarlo
+  if (cvInstance) return cvInstance;
+
+  // Si ya está cargando, esperar
+  if (isLoading && loadPromise) {
+    return loadPromise;
   }
 
-  if (cvReady && window.cv) {
-    return window.cv;
+  // Verificar si está disponible globalmente
+  if (typeof window !== 'undefined' && window.cv && window.cv.Mat) {
+    cvInstance = window.cv;
+    return cvInstance;
   }
 
-  if (cvPromise) {
-    return cvPromise;
-  }
+  isLoading = true;
 
-  cvPromise = new Promise((resolve, reject) => {
-    // Verificar si ya está cargado
-    if (window.cv && window.cv.Mat) {
-      cvReady = true;
-      resolve(window.cv);
+  loadPromise = new Promise((resolve, reject) => {
+    // Verificar si estamos en el cliente
+    if (typeof window === 'undefined') {
+      reject(new Error('OpenCV solo funciona en el navegador'));
       return;
     }
 
+    // Configurar callback para cuando OpenCV esté listo
+    window.Module = {
+      onRuntimeInitialized: () => {
+        cvInstance = window.cv;
+        isLoading = false;
+        console.log('OpenCV.js cargado correctamente');
+        resolve(cvInstance);
+      }
+    };
+
     // Cargar script
     const script = document.createElement('script');
-    script.src = 'https://docs.opencv.org/4.x/opencv.js';
+    script.src = OPENCV_CDN_URL;
     script.async = true;
 
     script.onload = () => {
-      // OpenCV.js usa un callback onRuntimeInitialized
-      const checkReady = setInterval(() => {
-        if (window.cv && window.cv.Mat) {
-          clearInterval(checkReady);
-          cvReady = true;
-          console.log('✅ OpenCV.js cargado correctamente');
-          resolve(window.cv);
-        }
-      }, 100);
-
-      // Timeout después de 30 segundos
-      setTimeout(() => {
-        clearInterval(checkReady);
-        if (!cvReady) {
-          reject(new Error('Timeout cargando OpenCV.js'));
-        }
-      }, 30000);
+      // El callback onRuntimeInitialized se encarga del resolve
     };
 
     script.onerror = () => {
-      reject(new Error('Error al cargar OpenCV.js'));
+      isLoading = false;
+      reject(new Error('Error cargando OpenCV.js'));
     };
 
     document.head.appendChild(script);
   });
 
-  return cvPromise;
+  return loadPromise;
 }
 
-export function isOpenCVReady(): boolean {
-  return cvReady;
+/**
+ * Verifica si OpenCV está disponible
+ */
+export function isOpenCVLoaded(): boolean {
+  return cvInstance !== null;
+}
+
+/**
+ * Obtiene la instancia de OpenCV
+ */
+export function getCV(): any {
+  if (!cvInstance) {
+    throw new Error('OpenCV no está cargado. Llame a loadOpenCV() primero.');
+  }
+  return cvInstance;
+}
+
+/**
+ * Carga OpenCV de forma lazy solo cuando se necesita
+ */
+export async function ensureOpenCVLoaded(): Promise<any> {
+  if (cvInstance) return cvInstance;
+  return loadOpenCV();
 }

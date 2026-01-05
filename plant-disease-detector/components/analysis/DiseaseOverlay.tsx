@@ -1,111 +1,87 @@
-"use client"
+'use client';
 
-import React, { useRef, useEffect, useState } from 'react';
+import { AffectedArea } from '@/types/analysis';
 
 interface DiseaseOverlayProps {
-  imageUrl: string;
-  rustContours: number[][];
-  scabContours: number[][];
-  showRust?: boolean;
-  showScab?: boolean;
+  areas: AffectedArea[];
+  diseaseColor: string;
 }
 
-export function DiseaseOverlay({
-  imageUrl,
-  rustContours,
-  scabContours,
-  showRust = true,
-  showScab = true
-}: DiseaseOverlayProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+export default function DiseaseOverlay({ areas, diseaseColor }: DiseaseOverlayProps) {
+  const getSeverityColor = (severity: AffectedArea['severity']) => {
+    switch (severity) {
+      case 'low':
+        return 'border-yellow-400 bg-yellow-400/20';
+      case 'medium':
+        return 'border-orange-500 bg-orange-500/20';
+      case 'high':
+        return 'border-red-500 bg-red-500/20';
+      default:
+        return 'border-gray-400 bg-gray-400/20';
+    }
+  };
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    
-    img.onload = () => {
-      // Ajustar canvas
-      canvas.width = img.width;
-      canvas.height = img.height;
-      setDimensions({ width: img.width, height: img.height });
-
-      // Dibujar imagen
-      ctx.drawImage(img, 0, 0);
-
-      // Dibujar contornos de roya (naranja)
-      if (showRust && rustContours.length > 0) {
-        ctx.strokeStyle = 'rgba(255, 140, 0, 0.9)';
-        ctx.lineWidth = 3;
-        ctx.fillStyle = 'rgba(255, 140, 0, 0.3)';
-
-        rustContours.forEach(contour => {
-          if (contour.length >= 4) {
-            ctx.beginPath();
-            ctx.moveTo(contour[0], contour[1]);
-            for (let i = 2; i < contour.length; i += 2) {
-              ctx.lineTo(contour[i], contour[i + 1]);
-            }
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-          }
-        });
-      }
-
-      // Dibujar contornos de sarna (púrpura)
-      if (showScab && scabContours.length > 0) {
-        ctx.strokeStyle = 'rgba(147, 51, 234, 0.9)';
-        ctx.lineWidth = 3;
-        ctx.fillStyle = 'rgba(147, 51, 234, 0.3)';
-
-        scabContours.forEach(contour => {
-          if (contour.length >= 4) {
-            ctx.beginPath();
-            ctx.moveTo(contour[0], contour[1]);
-            for (let i = 2; i < contour.length; i += 2) {
-              ctx.lineTo(contour[i], contour[i + 1]);
-            }
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-          }
-        });
-      }
-    };
-
-    img.src = imageUrl;
-  }, [imageUrl, rustContours, scabContours, showRust, showScab]);
+  const getSeverityLabel = (severity: AffectedArea['severity']) => {
+    switch (severity) {
+      case 'low':
+        return 'Leve';
+      case 'medium':
+        return 'Moderado';
+      case 'high':
+        return 'Severo';
+      default:
+        return '';
+    }
+  };
 
   return (
-    <div className="relative rounded-lg overflow-hidden shadow-lg bg-gray-100">
-      <canvas
-        ref={canvasRef}
-        className="w-full h-auto"
-      />
-      
-      {/* Leyenda */}
-      <div className="absolute bottom-3 right-3 bg-black/70 text-white text-xs p-2 rounded-lg">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-3 h-3 bg-orange-500 rounded" />
-          <span>Roya (Rust)</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-purple-500 rounded" />
-          <span>Sarna (Scab)</span>
-        </div>
-      </div>
+    <div className="disease-overlay absolute inset-0 pointer-events-none">
+      {areas.map((area, index) => (
+        <div
+          key={index}
+          className={`affected-area ${getSeverityColor(area.severity)}`}
+          style={{
+            left: `${area.x}%`,
+            top: `${area.y}%`,
+            width: `${area.width}%`,
+            height: `${area.height}%`,
+          }}
+        >
+          {/* Severity label */}
+          <span
+            className={`
+              absolute -top-6 left-1/2 transform -translate-x-1/2
+              px-2 py-0.5 rounded text-xs font-medium text-white
+              ${area.severity === 'low' ? 'bg-yellow-500' : 
+                area.severity === 'medium' ? 'bg-orange-500' : 'bg-red-500'}
+            `}
+          >
+            {getSeverityLabel(area.severity)}
+          </span>
 
-      {/* Indicador de tamaño */}
-      {dimensions.width > 0 && (
-        <div className="absolute top-3 left-3 bg-black/70 text-white text-xs px-2 py-1 rounded">
-          {dimensions.width} × {dimensions.height}px
+          {/* Corner markers */}
+          <div className="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 rounded-tl border-current" />
+          <div className="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 rounded-tr border-current" />
+          <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 rounded-bl border-current" />
+          <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 rounded-br border-current" />
+        </div>
+      ))}
+
+      {/* Legend */}
+      {areas.length > 0 && (
+        <div className="absolute bottom-4 left-4 flex gap-3 bg-black/60 rounded-lg px-3 py-2">
+          <div className="flex items-center gap-1.5 text-xs text-white">
+            <div className="w-3 h-3 rounded-sm bg-yellow-400" />
+            <span>Leve</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-white">
+            <div className="w-3 h-3 rounded-sm bg-orange-500" />
+            <span>Moderado</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-white">
+            <div className="w-3 h-3 rounded-sm bg-red-500" />
+            <span>Severo</span>
+          </div>
         </div>
       )}
     </div>

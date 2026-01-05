@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="leafGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16a34a;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0fdf4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#dcfce7;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#bgGradient)" stroke="#22c55e" stroke-width="8"/>
+  
+  <!-- Leaf shape -->
+  <path d="M256 80 
+           C 180 120, 120 200, 120 280 
+           C 120 360, 180 420, 256 430 
+           C 332 420, 392 360, 392 280 
+           C 392 200, 332 120, 256 80 Z" 
+        fill="url(#leafGradient)" 
+        stroke="#15803d" 
+        stroke-width="4"/>
+  
+  <!-- Leaf vein (center) -->
+  <path d="M256 100 L256 400" 
+        stroke="#15803d" 
+        stroke-width="6" 
+        stroke-linecap="round"
+        fill="none"/>
+  
+  <!-- Leaf veins (left) -->
+  <path d="M256 160 L190 200" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 220 L170 270" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 280 L180 340" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 340 L200 380" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  
+  <!-- Leaf veins (right) -->
+  <path d="M256 160 L322 200" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 220 L342 270" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 280 L332 340" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M256 340 L312 380" stroke="#15803d" stroke-width="3" stroke-linecap="round" fill="none"/>
+  
+  <!-- Magnifying glass -->
+  <circle cx="340" cy="340" r="60" fill="white" fill-opacity="0.9" stroke="#15803d" stroke-width="6"/>
+  <line x1="385" y1="385" x2="430" y2="430" stroke="#15803d" stroke-width="12" stroke-linecap="round"/>
+  
+  <!-- AI symbol inside magnifying glass -->
+  <text x="340" y="355" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#15803d" text-anchor="middle">AI</text>
+</svg>

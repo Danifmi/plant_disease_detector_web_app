@@ -1,63 +1,80 @@
-"use client"
+// Componente principal de captura de cámara
 
-import React, { useState, useEffect } from 'react';
+'use client';
+
+import { useEffect, useCallback } from 'react';
+import { Camera, CameraOff, RotateCcw, Circle, X } from 'lucide-react';
 import { useCamera } from '@/hooks/useCamera';
-import { Camera, SwitchCamera, X, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 interface CameraCaptureProps {
-  onCapture: (imageData: string) => void;
+  onCapture: (data: { blob: Blob; dataUrl: string }) => void;
   onClose?: () => void;
+  className?: string;
 }
 
-export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
+export function CameraCapture({ onCapture, onClose, className }: CameraCaptureProps) {
   const {
+    state,
     videoRef,
-    canvasRef,
-    isStreaming,
-    error,
     startCamera,
     stopCamera,
     captureImage,
-    switchCamera,
-    hasMultipleCameras
-  } = useCamera({ facingMode: 'environment' });
+    switchCameraDirection,
+    requestPermission
+  } = useCamera();
 
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [showFlash, setShowFlash] = useState(false);
-
-  // Auto-iniciar cámara al montar
+  // Iniciar cámara al montar
   useEffect(() => {
     startCamera();
-    return () => {
+    return () => stopCamera();
+  }, [startCamera, stopCamera]);
+
+  // Manejar captura
+  const handleCapture = useCallback(async () => {
+    const result = await captureImage();
+    if (result) {
       stopCamera();
-    };
-  }, []);
+      onCapture(result);
+    }
+  }, [captureImage, stopCamera, onCapture]);
 
-  const handleCapture = () => {
-    setIsCapturing(true);
-    setShowFlash(true);
-    
-    // Efecto flash
-    setTimeout(() => {
-      setShowFlash(false);
-      const imageData = captureImage();
-      if (imageData) {
-        onCapture(imageData);
-        stopCamera();
-      }
-      setIsCapturing(false);
-    }, 150);
-  };
+  // Si no hay permiso
+  if (!state.hasPermission && !state.isActive) {
+    return (
+      <div className={cn('flex flex-col items-center justify-center p-8 bg-gray-100 rounded-lg', className)}>
+        <CameraOff className="h-16 w-16 text-gray-400 mb-4" />
+        <h3 className="text-lg font-semibold mb-2">Permiso de cámara requerido</h3>
+        <p className="text-muted-foreground text-center mb-4">
+          Para usar esta función, necesitamos acceso a tu cámara.
+        </p>
+        <Button onClick={requestPermission}>
+          <Camera className="mr-2 h-4 w-4" />
+          Permitir acceso a la cámara
+        </Button>
+      </div>
+    );
+  }
 
-  const handleClose = () => {
-    stopCamera();
-    onClose?.();
-  };
+  // Si hay error
+  if (state.error) {
+    return (
+      <div className={cn('flex flex-col items-center justify-center p-8 bg-red-50 rounded-lg', className)}>
+        <CameraOff className="h-16 w-16 text-red-400 mb-4" />
+        <h3 className="text-lg font-semibold text-red-600 mb-2">Error de cámara</h3>
+        <p className="text-red-500 text-center mb-4">{state.error}</p>
+        <Button onClick={() => startCamera()} variant="outline">
+          <RotateCcw className="mr-2 h-4 w-4" />
+          Intentar de nuevo
+        </Button>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative w-full h-full min-h-[400px] bg-black rounded-lg overflow-hidden">
-      {/* Video Preview */}
+    <div className={cn('relative rounded-lg overflow-hidden bg-black', className)}>
+      {/* Video preview */}
       <video
         ref={videoRef}
         autoPlay
@@ -65,30 +82,23 @@ export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
         muted
         className="w-full h-full object-cover"
       />
-      
-      {/* Canvas oculto para captura */}
-      <canvas ref={canvasRef} className="hidden" />
 
-      {/* Overlay de captura (flash) */}
-      {showFlash && (
-        <div className="absolute inset-0 bg-white animate-pulse z-10" />
-      )}
-
-      {/* Guía de encuadre */}
-      {isStreaming && (
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute inset-8 border-2 border-white/50 rounded-lg">
-            {/* Esquinas */}
-            <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-green-400 rounded-tl-lg" />
-            <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-green-400 rounded-tr-lg" />
-            <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-green-400 rounded-bl-lg" />
-            <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-green-400 rounded-br-lg" />
-          </div>
-          <p className="absolute top-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
-            Encuadra la hoja dentro del marco
-          </p>
+      {/* Overlay con guías */}
+      <div className="absolute inset-0 pointer-events-none">
+        {/* Marco de enfoque */}
+        <div className="absolute inset-8 border-2 border-white/50 rounded-lg">
+          {/* Esquinas */}
+          <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-green-400 rounded-tl" />
+          <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-green-400 rounded-tr" />
+          <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-green-400 rounded-bl" />
+          <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-green-400 rounded-br" />
         </div>
-      )}
+        
+        {/* Instrucción */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-black/50 rounded-full">
+          <p className="text-white text-sm">Centra la hoja en el marco</p>
+        </div>
+      </div>
 
       {/* Controles */}
       <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
@@ -98,67 +108,33 @@ export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
             <Button
               variant="ghost"
               size="icon"
-              onClick={handleClose}
+              onClick={onClose}
               className="text-white hover:bg-white/20"
             >
               <X className="h-6 w-6" />
             </Button>
           )}
 
-          {/* Botón capturar */}
-          <Button
-            size="lg"
+          {/* Botón de captura */}
+          <button
             onClick={handleCapture}
-            disabled={!isStreaming || isCapturing}
-            className="w-16 h-16 rounded-full bg-white hover:bg-gray-200 text-black p-0"
+            disabled={!state.isActive}
+            className="w-16 h-16 rounded-full bg-white flex items-center justify-center hover:scale-105 transition-transform disabled:opacity-50"
           >
-            {isCapturing ? (
-              <Loader2 className="h-8 w-8 animate-spin" />
-            ) : (
-              <Camera className="h-8 w-8" />
-            )}
-          </Button>
+            <Circle className="h-14 w-14 text-green-500 fill-green-500" />
+          </button>
 
           {/* Botón cambiar cámara */}
-          {hasMultipleCameras ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={switchCamera}
-              className="text-white hover:bg-white/20"
-            >
-              <SwitchCamera className="h-6 w-6" />
-            </Button>
-          ) : (
-            <div className="w-10" /> // Spacer para mantener centrado el botón de captura
-          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={switchCameraDirection}
+            className="text-white hover:bg-white/20"
+          >
+            <RotateCcw className="h-6 w-6" />
+          </Button>
         </div>
       </div>
-
-      {/* Error */}
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-20">
-          <div className="text-center p-6 max-w-sm">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-100 flex items-center justify-center">
-              <X className="h-8 w-8 text-red-600" />
-            </div>
-            <p className="text-red-400 mb-4">{error}</p>
-            <Button onClick={startCamera} variant="outline">
-              Reintentar
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Estado de carga inicial */}
-      {!isStreaming && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black z-20">
-          <div className="text-center">
-            <Loader2 className="h-12 w-12 animate-spin text-green-500 mx-auto mb-4" />
-            <p className="text-white">Iniciando cámara...</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

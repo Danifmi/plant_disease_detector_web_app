@@ -1,257 +1,229 @@
-"use client"
+'use client';
 
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import Link from 'next/link';
+import { ArrowLeft, Camera, Upload, RotateCcw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Header } from '@/components/common/Header';
 import { CameraCapture } from '@/components/camera/CameraCapture';
 import { ImageUpload } from '@/components/upload/ImageUpload';
-import { AnalysisResultComponent } from '@/components/analysis/AnalysisResult';
-import { DiseaseOverlay } from '@/components/analysis/DiseaseOverlay';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardContent } from '@/components/ui/card';
-import { Camera, Upload, Loader2, RefreshCw, ArrowLeft, AlertCircle } from 'lucide-react';
-import { analyzeLeafImage, type AnalysisResult } from '@/lib/opencv/colorAnalysis';
+import AnalysisResult from '@/components/analysis/AnalysisResult';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { useAnalysis } from '@/hooks/useAnalysis';
 
-type AnalysisState = 'idle' | 'analyzing' | 'complete' | 'error';
+type InputMode = 'select' | 'camera' | 'upload';
 
 export default function AnalyzePage() {
-  const [state, setState] = useState<AnalysisState>('idle');
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loadingMessage, setLoadingMessage] = useState('Analizando imagen...');
+  const [mode, setMode] = useState<InputMode>('select');
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const { state, analyze, reset } = useAnalysis();
 
-  const handleImageCapture = useCallback(async (data: string) => {
-    setImageData(data);
-    setState('analyzing');
-    setError(null);
-    setLoadingMessage('Cargando OpenCV.js...');
+  const handleCameraCapture = useCallback(async (data: { blob: Blob; dataUrl: string }) => {
+    setCapturedImage(data.dataUrl);
+    await analyze(data.blob);
+  }, [analyze]);
 
-    try {
-      // Crear imagen para análisis
-      const img = new Image();
-      img.src = data;
-      
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-      });
+  const handleImageSelect = useCallback(async (file: File, previewUrl: string) => {
+    setCapturedImage(previewUrl);
+    await analyze(file);
+  }, [analyze]);
 
-      setLoadingMessage('Analizando colores...');
+  const handleReset = useCallback(() => {
+    setCapturedImage(null);
+    reset();
+    setMode('select');
+  }, [reset]);
 
-      // Crear canvas
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      
-      if (!ctx) {
-        throw new Error('No se pudo crear el contexto de canvas');
-      }
-      
-      ctx.drawImage(img, 0, 0);
-
-      setLoadingMessage('Detectando enfermedades...');
-
-      // Realizar análisis
-      const analysisResult = await analyzeLeafImage(canvas);
-
-      setResult(analysisResult);
-      setState('complete');
-    } catch (err) {
-      console.error('Error en análisis:', err);
-      setError(err instanceof Error ? err.message : 'Error desconocido durante el análisis');
-      setState('error');
+  const handleBackToSelect = useCallback(() => {
+    if (state.status === 'idle') {
+      setMode('select');
     }
-  }, []);
-
-  const handleReset = () => {
-    setState('idle');
-    setImageData(null);
-    setResult(null);
-    setError(null);
-  };
+  }, [state.status]);
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2 text-gray-600 hover:text-gray-900">
-              <ArrowLeft className="h-5 w-5" />
-              <span>Volver</span>
-            </Link>
-            <h1 className="text-xl font-bold text-gray-900">
-              Analizar Planta
-            </h1>
-            <div className="w-20" /> {/* Spacer */}
-          </div>
-        </div>
-      </header>
+    <div className="flex flex-col min-h-screen bg-gradient-to-br from-green-50 to-emerald-100">
+      <Header />
 
-      <div className="container mx-auto px-4 py-8">
-        {/* Estado: Selección de imagen */}
-        {state === 'idle' && (
-          <div className="max-w-2xl mx-auto">
+      <main className="flex-1 px-4 py-6">
+        {/* Mode Selection */}
+        {mode === 'select' && !capturedImage && state.status === 'idle' && (
+          <div className="max-w-lg mx-auto">
             <div className="text-center mb-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                Captura o sube una imagen
-              </h2>
+              <h1 className="text-2xl font-bold text-gray-900 mb-2">
+                Analizar Planta
+              </h1>
               <p className="text-gray-600">
-                Toma una foto de una hoja de manzano o sube una imagen para analizarla
+                Elige cómo quieres capturar la imagen de la hoja
               </p>
             </div>
 
-            <Tabs defaultValue="camera" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 mb-6">
-                <TabsTrigger value="camera" className="text-base">
-                  <Camera className="mr-2 h-4 w-4" />
-                  Cámara
-                </TabsTrigger>
-                <TabsTrigger value="upload" className="text-base">
-                  <Upload className="mr-2 h-4 w-4" />
-                  Subir Imagen
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="camera">
-                <Card>
-                  <CardContent className="p-0">
-                    <div className="aspect-[4/3] bg-gray-900 rounded-lg overflow-hidden">
-                      <CameraCapture onCapture={handleImageCapture} />
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="upload">
-                <Card>
-                  <CardContent className="p-6">
-                    <ImageUpload onImageSelect={handleImageCapture} />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-
-            {/* Tips */}
-            <div className="mt-8 p-4 bg-green-50 rounded-lg border border-green-200">
-              <h3 className="font-semibold text-green-800 mb-2">💡 Consejos para mejores resultados:</h3>
-              <ul className="text-sm text-green-700 space-y-1">
-                <li>• Asegúrate de que la hoja esté bien iluminada</li>
-                <li>• Evita sombras sobre la hoja</li>
-                <li>• Intenta que la hoja ocupe la mayor parte de la imagen</li>
-                <li>• Enfoca claramente la superficie de la hoja</li>
-              </ul>
-            </div>
-          </div>
-        )}
-
-        {/* Estado: Analizando */}
-        {state === 'analyzing' && (
-          <div className="flex flex-col items-center justify-center py-16">
-            <div className="relative">
-              <Loader2 className="h-16 w-16 animate-spin text-green-600" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="h-8 w-8 bg-green-100 rounded-full" />
-              </div>
-            </div>
-            <p className="text-xl font-medium mt-6 text-gray-900">{loadingMessage}</p>
-            <p className="text-gray-500 mt-2">Esto puede tomar unos segundos</p>
-            
-            {/* Preview de la imagen mientras se analiza */}
-            {imageData && (
-              <div className="mt-8 max-w-sm">
-                <img 
-                  src={imageData} 
-                  alt="Analizando..." 
-                  className="rounded-lg shadow-lg opacity-50"
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Estado: Completado */}
-        {state === 'complete' && result && imageData && (
-          <div className="max-w-6xl mx-auto">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">
-                  Resultados del Análisis
-                </h2>
-                <p className="text-gray-600">
-                  Análisis completado correctamente
-                </p>
-              </div>
-              <Button onClick={handleReset} variant="outline">
-                <RefreshCw className="mr-2 h-4 w-4" />
-                Nuevo Análisis
-              </Button>
-            </div>
-
-            <div className="grid lg:grid-cols-2 gap-8">
-              {/* Imagen con overlay */}
-              <div>
-                <h3 className="text-lg font-semibold mb-4">
-                  Áreas Detectadas
-                </h3>
-                <DiseaseOverlay
-                  imageUrl={imageData}
-                  rustContours={result.contours.rust}
-                  scabContours={result.contours.scab}
-                  showRust={true}
-                  showScab={true}
-                />
-                
-                {/* Imagen original para comparar */}
-                <div className="mt-4">
-                  <p className="text-sm text-gray-500 mb-2">Imagen original:</p>
-                  <img 
-                    src={imageData} 
-                    alt="Original" 
-                    className="rounded-lg shadow w-full"
-                  />
+            <div className="space-y-4">
+              <button
+                onClick={() => setMode('camera')}
+                className="w-full bg-white rounded-2xl p-6 shadow-md hover:shadow-lg transition-all hover:-translate-y-1 flex items-center gap-4"
+              >
+                <div className="w-14 h-14 bg-green-100 rounded-xl flex items-center justify-center text-green-600">
+                  <Camera className="w-7 h-7" />
                 </div>
-              </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-gray-900">Usar Cámara</h3>
+                  <p className="text-sm text-gray-500">
+                    Toma una foto en tiempo real
+                  </p>
+                </div>
+              </button>
 
-              {/* Resultados */}
-              <div>
-                <h3 className="text-lg font-semibold mb-4">
-                  Diagnóstico
-                </h3>
-                <AnalysisResultComponent
-                  result={result}
-                  imageUrl={imageData}
-                />
-              </div>
+              <button
+                onClick={() => setMode('upload')}
+                className="w-full bg-white rounded-2xl p-6 shadow-md hover:shadow-lg transition-all hover:-translate-y-1 flex items-center gap-4"
+              >
+                <div className="w-14 h-14 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600">
+                  <Upload className="w-7 h-7" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-gray-900">Subir Imagen</h3>
+                  <p className="text-sm text-gray-500">
+                    Selecciona una foto de tu galería
+                  </p>
+                </div>
+              </button>
             </div>
-          </div>
-        )}
 
-        {/* Estado: Error */}
-        {state === 'error' && (
-          <div className="max-w-md mx-auto text-center py-16">
-            <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-red-100 flex items-center justify-center">
-              <AlertCircle className="h-8 w-8 text-red-600" />
-            </div>
-            <h2 className="text-xl font-bold text-gray-900 mb-2">
-              Error en el Análisis
-            </h2>
-            <p className="text-red-600 mb-6">{error}</p>
-            <div className="space-y-3">
-              <Button onClick={handleReset} className="w-full">
-                Intentar de nuevo
-              </Button>
+            <div className="mt-8 text-center">
               <Link href="/">
-                <Button variant="outline" className="w-full">
+                <Button variant="ghost" className="gap-2">
+                  <ArrowLeft className="w-4 h-4" />
                   Volver al inicio
                 </Button>
               </Link>
             </div>
           </div>
         )}
-      </div>
-    </main>
+
+        {/* Camera Mode */}
+        {mode === 'camera' && !capturedImage && state.status === 'idle' && (
+          <div className="max-w-lg mx-auto">
+            <div className="flex items-center gap-4 mb-6">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleBackToSelect}
+                className="gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Volver
+              </Button>
+              <h1 className="text-xl font-bold text-gray-900">Capturar Imagen</h1>
+            </div>
+
+            <CameraCapture 
+              onCapture={handleCameraCapture} 
+              onClose={handleBackToSelect}
+              className="aspect-[4/3]"
+            />
+
+            <div className="mt-4 bg-green-50 rounded-xl p-4 text-center">
+              <p className="text-sm text-green-800">
+                <strong>Consejo:</strong> Asegúrate de que la hoja esté bien iluminada
+                y ocupe la mayor parte de la imagen.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Upload Mode */}
+        {mode === 'upload' && !capturedImage && state.status === 'idle' && (
+          <div className="max-w-lg mx-auto">
+            <div className="flex items-center gap-4 mb-6">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleBackToSelect}
+                className="gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Volver
+              </Button>
+              <h1 className="text-xl font-bold text-gray-900">Subir Imagen</h1>
+            </div>
+
+            <ImageUpload 
+              onImageSelect={handleImageSelect}
+              className="min-h-[300px]"
+            />
+
+            <div className="mt-4 bg-green-50 rounded-xl p-4 text-center">
+              <p className="text-sm text-green-800">
+                <strong>Consejo:</strong> Las mejores imágenes muestran una sola hoja
+                con buena iluminación y enfoque.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Processing State */}
+        {(state.status === 'loading' || state.status === 'processing') && (
+          <div className="max-w-lg mx-auto text-center py-16">
+            <LoadingSpinner size="lg" />
+            <p className="mt-4 text-gray-600">
+              {state.status === 'loading' ? 'Preparando análisis...' : 'Analizando imagen...'}
+            </p>
+            {state.progress !== undefined && (
+              <div className="mt-4 w-full max-w-xs mx-auto">
+                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-green-600 rounded-full transition-all duration-300"
+                    style={{ width: `${state.progress}%` }}
+                  />
+                </div>
+                <p className="text-sm text-gray-500 mt-2">{state.progress}%</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Results State */}
+        {state.status === 'complete' && state.result && capturedImage && (
+          <div className="max-w-2xl mx-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h1 className="text-xl font-bold text-gray-900">Resultados</h1>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReset}
+                className="gap-2"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Nuevo análisis
+              </Button>
+            </div>
+
+            <AnalysisResult 
+              result={state.result} 
+              imageUrl={capturedImage} 
+            />
+          </div>
+        )}
+
+        {/* Error State */}
+        {state.status === 'error' && (
+          <div className="max-w-md mx-auto text-center py-16">
+            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">❌</span>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              Error en el análisis
+            </h2>
+            <p className="text-gray-600 mb-6">
+              {state.error || 'Ha ocurrido un error al procesar la imagen.'}
+            </p>
+            <Button onClick={handleReset} className="gap-2">
+              <RotateCcw className="w-4 h-4" />
+              Intentar de nuevo
+            </Button>
+          </div>
+        )}
+      </main>
+    </div>
   );
 }
