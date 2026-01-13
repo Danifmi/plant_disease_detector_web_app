@@ -66,9 +66,9 @@ export async function imageDataToCanvas(imageData: string): Promise<HTMLCanvasEl
 }
 
 /**
- * Convierte File a HTMLCanvasElement
+ * Convierte File/Blob a HTMLCanvasElement
  */
-export async function fileToCanvas(file: File): Promise<HTMLCanvasElement> {
+export async function fileToCanvas(file: Blob): Promise<HTMLCanvasElement> {
   const reader = new FileReader();
   
   return new Promise((resolve, reject) => {

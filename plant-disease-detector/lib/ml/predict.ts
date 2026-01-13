@@ -2,9 +2,10 @@
 import * as tf from '@tensorflow/tfjs';
 import { loadModel, loadMetadata } from './model-loader';
 import { preprocessImage, imageDataToCanvas, fileToCanvas } from './preprocess';
+import { DiseaseType } from '@/types/analysis';
 
 export interface PredictionResult {
-  class: string;
+  disease: DiseaseType;
   classLabel: string; // Etiqueta en español
   confidence: number;
   probabilities: {
@@ -27,7 +28,7 @@ const CLASS_LABELS: Record<string, string> = {
  * Predice la enfermedad en una hoja de planta
  */
 export async function predictDisease(
-  imageSource: HTMLImageElement | HTMLCanvasElement | string | File
+  imageSource: HTMLImageElement | HTMLCanvasElement | string | Blob
 ): Promise<PredictionResult> {
   const startTime = performance.now();
 
@@ -40,7 +41,7 @@ export async function predictDisease(
     
     if (typeof imageSource === 'string') {
       canvas = await imageDataToCanvas(imageSource);
-    } else if (imageSource instanceof File) {
+    } else if (imageSource instanceof Blob) {
       canvas = await fileToCanvas(imageSource);
     } else {
       canvas = imageSource instanceof HTMLCanvasElement 
@@ -75,7 +76,7 @@ export async function predictDisease(
     const executionTime = performance.now() - startTime;
 
     return {
-      class: predictedClass,
+      disease: predictedClass as DiseaseType,
       classLabel: CLASS_LABELS[predictedClass],
       confidence: maxProb,
       probabilities: {
@@ -131,6 +132,25 @@ export function getTopPredictions(
     .sort((a, b) => b.probability - a.probability);
 
   return entries.slice(0, topN);
+}
+
+// Alias para compatibilidad con hooks existentes
+export const predict = predictDisease;
+
+/**
+ * Predicción con Test Time Augmentation (TTA)
+ * Realiza múltiples predicciones con transformaciones de la imagen y promedia los resultados
+ * TODO: Implementar transformaciones reales (flip, rotate, etc.)
+ */
+export async function predictWithTTA(
+  imageSource: HTMLImageElement | HTMLCanvasElement | string | Blob
+): Promise<PredictionResult> {
+  // Por ahora, simplemente delegamos a la predicción estándar
+  // En el futuro, aquí implementaremos:
+  // 1. Generar 4-8 variaciones de la imagen
+  // 2. Predecir cada una
+  // 3. Promediar las probabilidades
+  return predictDisease(imageSource);
 }
 
 // Helper: Convertir HTMLImageElement a Canvas
