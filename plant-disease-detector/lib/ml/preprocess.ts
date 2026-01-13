@@ -1,126 +1,139 @@
-// Preprocesamiento de imágenes para el modelo
-
+// lib/ml/preprocess.ts
 import * as tf from '@tensorflow/tfjs';
-import { MODEL_CONFIG } from '@/lib/constants/config';
+
+const IMAGE_SIZE = 224;
 
 /**
- * Preprocesa una imagen para el modelo
- * Convierte a tensor normalizado de 224x224x3
+ * Preprocesa una imagen para el modelo EfficientNetB0
+ * Input: HTMLImageElement, HTMLCanvasElement, ImageData, o string (base64)
+ * Output: Tensor4D normalizado [1, 224, 224, 3] en rango [0, 1]
  */
 export async function preprocessImage(
-  source: HTMLImageElement | HTMLCanvasElement | ImageData | string | File | Blob
+  imageSource: HTMLImageElement | HTMLCanvasElement | ImageData | string
 ): Promise<tf.Tensor4D> {
-  let tensor: tf.Tensor3D;
+  return tf.tidy(() => {
+    let tensor: tf.Tensor3D;
 
-  // Manejar diferentes tipos de entrada
-  if (source instanceof File || source instanceof Blob) {
-    const imageUrl = URL.createObjectURL(source);
-    try {
-      const img = await loadImage(imageUrl);
-      tensor = tf.browser.fromPixels(img);
-    } finally {
-      URL.revokeObjectURL(imageUrl);
+    // Manejar diferentes tipos de entrada
+    if (typeof imageSource === 'string') {
+      // Si es base64, crear elemento de imagen
+      throw new Error('Use imageDataToCanvas() primero para convertir base64 a canvas');
+    } else if (imageSource instanceof ImageData) {
+      // Convertir ImageData a tensor
+      tensor = tf.browser.fromPixels(imageSource);
+    } else {
+      // HTMLImageElement o HTMLCanvasElement
+      tensor = tf.browser.fromPixels(imageSource);
     }
-  } else if (typeof source === 'string') {
-    const img = await loadImage(source);
-    tensor = tf.browser.fromPixels(img);
-  } else if (source instanceof ImageData) {
-    tensor = tf.browser.fromPixels(source);
-  } else {
-    tensor = tf.browser.fromPixels(source);
-  }
 
-  // Redimensionar a tamaño del modelo
-  const resized = tf.image.resizeBilinear(tensor, [
-    MODEL_CONFIG.inputSize,
-    MODEL_CONFIG.inputSize
-  ]);
+    // 1. Redimensionar a 224x224
+    const resized = tf.image.resizeBilinear(tensor, [IMAGE_SIZE, IMAGE_SIZE]);
 
-  // Normalizar valores de 0-255 a 0-1
-  const normalized = resized.div(255.0);
+    // 2. Normalizar a [0, 1] dividiendo por 255
+    const normalized = resized.toFloat().div(255.0);
 
-  // Agregar dimensión de batch
-  const batched = normalized.expandDims(0) as tf.Tensor4D;
+    // 3. Expandir dimensiones para batch [1, 224, 224, 3]
+    const batched = normalized.expandDims(0) as tf.Tensor4D;
 
-  // Liberar tensores intermedios
-  tensor.dispose();
-  resized.dispose();
-  normalized.dispose();
-
-  return batched;
+    return batched;
+  });
 }
 
 /**
- * Carga una imagen desde URL
+ * Convierte data URL (base64) a HTMLCanvasElement
  */
-function loadImage(src: string): Promise<HTMLImageElement> {
+export async function imageDataToCanvas(imageData: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
+    
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        resolve(canvas);
+      } else {
+        reject(new Error('No se pudo obtener contexto 2D'));
+      }
+    };
+    
+    img.onerror = () => reject(new Error('Error cargando imagen'));
+    img.src = imageData;
   });
 }
 
 /**
- * Preprocesa para detección de color (OpenCV style)
- * Convierte RGB a HSV y aplica máscaras de color
+ * Convierte File a HTMLCanvasElement
  */
-export function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
-  r /= 255;
-  g /= 255;
-  b /= 255;
+export async function fileToCanvas(file: File): Promise<HTMLCanvasElement> {
+  const reader = new FileReader();
+  
+  return new Promise((resolve, reject) => {
+    reader.onload = async (e) => {
+      const dataUrl = e.target?.result as string;
+      try {
+        const canvas = await imageDataToCanvas(dataUrl);
+        resolve(canvas);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    
+    reader.onerror = () => reject(new Error('Error leyendo archivo'));
+    reader.readAsDataURL(file);
+  });
+}
 
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const diff = max - min;
+/**
+ * Valida que la imagen tenga el tamaño mínimo requerido
+ */
+export function validateImageSize(
+  element: HTMLImageElement | HTMLCanvasElement,
+  minSize: number = 224
+): { valid: boolean; message?: string } {
+  const width = element.width;
+  const height = element.height;
 
-  let h = 0;
-  let s = max === 0 ? 0 : diff / max;
-  let v = max;
-
-  if (diff !== 0) {
-    switch (max) {
-      case r:
-        h = 60 * ((g - b) / diff + (g < b ? 6 : 0));
-        break;
-      case g:
-        h = 60 * ((b - r) / diff + 2);
-        break;
-      case b:
-        h = 60 * ((r - g) / diff + 4);
-        break;
-    }
+  if (width < minSize || height < minSize) {
+    return {
+      valid: false,
+      message: `La imagen es demasiado pequeña. Mínimo ${minSize}x${minSize}px, actual ${width}x${height}px`
+    };
   }
 
-  return [h, s * 100, v * 100];
+  return { valid: true };
 }
 
 /**
- * Convierte ImageData a tensor normalizado
+ * Recorta imagen al centro (square crop)
  */
-export function imageDataToTensor(imageData: ImageData): tf.Tensor3D {
-  return tf.tidy(() => {
-    const tensor = tf.browser.fromPixels(imageData);
-    return tensor.div(255.0) as tf.Tensor3D;
-  });
-}
+export function centerCrop(
+  canvas: HTMLCanvasElement,
+  targetSize: number = IMAGE_SIZE
+): HTMLCanvasElement {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('No se pudo obtener contexto 2D');
 
-/**
- * Aplica augmentación básica para mejorar predicciones
- */
-export function applyTestTimeAugmentation(
-  tensor: tf.Tensor4D
-): tf.Tensor4D[] {
-  return tf.tidy(() => {
-    const augmented: tf.Tensor4D[] = [tensor.clone()];
+  const size = Math.min(canvas.width, canvas.height);
+  const x = (canvas.width - size) / 2;
+  const y = (canvas.height - size) / 2;
 
-    // Flip horizontal - usar unknown para evitar errores de tipo estrictos
-    const squeezed = tensor.squeeze([0]);
-    const flipped = tf.image.flipLeftRight(squeezed as unknown as tf.Tensor4D);
-    augmented.push(tf.expandDims(flipped, 0) as tf.Tensor4D);
+  // Crear nuevo canvas con el recorte
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = targetSize;
+  croppedCanvas.height = targetSize;
+  
+  const croppedCtx = croppedCanvas.getContext('2d');
+  if (!croppedCtx) throw new Error('No se pudo obtener contexto 2D');
 
-    return augmented;
-  });
+  croppedCtx.drawImage(
+    canvas,
+    x, y, size, size,  // fuente
+    0, 0, targetSize, targetSize  // destino
+  );
+
+  return croppedCanvas;
 }

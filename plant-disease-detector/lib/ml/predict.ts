@@ -1,147 +1,147 @@
-// Función principal de predicción
-
+// lib/ml/predict.ts
 import * as tf from '@tensorflow/tfjs';
-import { getModel } from './model';
-import { preprocessImage } from './preprocess';
-import { PredictionResult, DiseaseType } from '@/types/analysis';
-import { MODEL_CONFIG } from '@/lib/constants/config';
+import { loadModel, loadMetadata } from './model-loader';
+import { preprocessImage, imageDataToCanvas, fileToCanvas } from './preprocess';
+
+export interface PredictionResult {
+  class: string;
+  classLabel: string; // Etiqueta en español
+  confidence: number;
+  probabilities: {
+    healthy: number;
+    multiple_diseases: number;
+    rust: number;
+    scab: number;
+  };
+  executionTime: number; // en ms
+}
+
+const CLASS_LABELS: Record<string, string> = {
+  healthy: 'Saludable',
+  multiple_diseases: 'Múltiples Enfermedades',
+  rust: 'Roya',
+  scab: 'Sarna'
+};
 
 /**
- * Realiza una predicción sobre una imagen
+ * Predice la enfermedad en una hoja de planta
  */
-export async function predict(
-  source: HTMLImageElement | HTMLCanvasElement | ImageData | string | File | Blob
+export async function predictDisease(
+  imageSource: HTMLImageElement | HTMLCanvasElement | string | File
 ): Promise<PredictionResult> {
-  const model = await getModel();
-
-  // Preprocesar imagen
-  const tensor = await preprocessImage(source);
+  const startTime = performance.now();
 
   try {
-    // Realizar predicción
-    const predictions = model.predict(tensor) as tf.Tensor;
+    // 1. Cargar modelo si no está cargado
+    const model = await loadModel();
+
+    // 2. Preprocesar imagen
+    let canvas: HTMLCanvasElement;
+    
+    if (typeof imageSource === 'string') {
+      canvas = await imageDataToCanvas(imageSource);
+    } else if (imageSource instanceof File) {
+      canvas = await fileToCanvas(imageSource);
+    } else {
+      canvas = imageSource instanceof HTMLCanvasElement 
+        ? imageSource 
+        : await imageElementToCanvas(imageSource);
+    }
+
+    // 3. Convertir a tensor
+    const inputTensor = await preprocessImage(canvas);
+
+    // 4. Realizar predicción
+    const predictions = model.predict(inputTensor) as tf.Tensor;
     const probabilities = await predictions.data();
 
-    // Obtener clase con mayor probabilidad
-    const maxIndex = probabilities.indexOf(Math.max(...Array.from(probabilities)));
-    const disease = MODEL_CONFIG.classes[maxIndex] as DiseaseType;
-    const confidence = probabilities[maxIndex];
-
-    // Construir resultado
-    const result: PredictionResult = {
-      disease,
-      confidence,
-      probabilities: {
-        healthy: probabilities[0],
-        multiple_diseases: probabilities[1],
-        rust: probabilities[2],
-        scab: probabilities[3]
-      }
-    };
-
-    // Limpiar tensores
+    // 5. Limpiar tensores
+    inputTensor.dispose();
     predictions.dispose();
 
-    return result;
-  } finally {
-    tensor.dispose();
-  }
-}
+    // 6. Procesar resultados
+    const classes = ['healthy', 'multiple_diseases', 'rust', 'scab'];
+    let maxIndex = 0;
+    let maxProb = probabilities[0];
 
-/**
- * Predicción con Test Time Augmentation para mayor precisión
- */
-export async function predictWithTTA(
-  source: HTMLImageElement | HTMLCanvasElement | ImageData | string | File | Blob
-): Promise<PredictionResult> {
-  const model = await getModel();
-  const tensor = await preprocessImage(source);
+    for (let i = 1; i < probabilities.length; i++) {
+      if (probabilities[i] > maxProb) {
+        maxProb = probabilities[i];
+        maxIndex = i;
+      }
+    }
 
-  try {
-    // Original
-    const pred1 = model.predict(tensor) as tf.Tensor;
+    const predictedClass = classes[maxIndex];
+    const executionTime = performance.now() - startTime;
 
-    // Flipped horizontalmente usando tidy para manejo de memoria
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const flipped = tf.tidy(() => {
-      const squeezed = tf.squeeze(tensor, [0]);
-      // flipLeftRight acepta Tensor3D o Tensor4D
-      const flippedImg = tf.image.flipLeftRight(squeezed as unknown as tf.Tensor4D);
-      return tf.expandDims(flippedImg, 0);
-    }) as tf.Tensor4D;
-    const pred2 = model.predict(flipped) as tf.Tensor;
-
-    // Promediar predicciones
-    const avgPred = tf.tidy(() => {
-      return pred1.add(pred2).div(2);
-    });
-
-    const probabilities = await avgPred.data();
-
-    const maxIndex = probabilities.indexOf(Math.max(...Array.from(probabilities)));
-    const disease = MODEL_CONFIG.classes[maxIndex] as DiseaseType;
-    const confidence = probabilities[maxIndex];
-
-    const result: PredictionResult = {
-      disease,
-      confidence,
+    return {
+      class: predictedClass,
+      classLabel: CLASS_LABELS[predictedClass],
+      confidence: maxProb,
       probabilities: {
         healthy: probabilities[0],
         multiple_diseases: probabilities[1],
         rust: probabilities[2],
         scab: probabilities[3]
-      }
+      },
+      executionTime
     };
-
-    // Limpiar
-    pred1.dispose();
-    pred2.dispose();
-    flipped.dispose();
-    avgPred.dispose();
-
-    return result;
-  } finally {
-    tensor.dispose();
+  } catch (error) {
+    console.error('Error en predicción:', error);
+    throw error;
   }
 }
 
 /**
- * Predicción batch para múltiples imágenes
+ * Predicción por lotes (múltiples imágenes)
  */
 export async function predictBatch(
-  sources: Array<HTMLImageElement | HTMLCanvasElement | ImageData | string | File | Blob>
+  imageSources: (HTMLImageElement | HTMLCanvasElement | string)[]
 ): Promise<PredictionResult[]> {
-  const model = await getModel();
+  const model = await loadModel();
   const results: PredictionResult[] = [];
 
-  for (const source of sources) {
-    const result = await predict(source);
-    results.push(result);
+  // Procesar en lotes de 4 para no saturar memoria
+  const batchSize = 4;
+  
+  for (let i = 0; i < imageSources.length; i += batchSize) {
+    const batch = imageSources.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(source => predictDisease(source))
+    );
+    results.push(...batchResults);
   }
 
   return results;
 }
 
 /**
- * Obtiene las probabilidades formateadas como porcentaje
+ * Obtiene los top N resultados más probables
  */
-export function formatProbabilities(probs: PredictionResult['probabilities']): {
-  label: string;
-  value: number;
-  percentage: string;
-}[] {
-  const labels: Record<string, string> = {
-    healthy: 'Saludable',
-    multiple_diseases: 'Múltiples Enfermedades',
-    rust: 'Roya',
-    scab: 'Sarna'
-  };
-
-  return Object.entries(probs)
-    .map(([key, value]) => ({
-      label: labels[key] || key,
-      value,
-      percentage: `${(value * 100).toFixed(1)}%`
+export function getTopPredictions(
+  result: PredictionResult,
+  topN: number = 3
+): Array<{ class: string; classLabel: string; probability: number }> {
+  const entries = Object.entries(result.probabilities)
+    .map(([cls, prob]) => ({
+      class: cls,
+      classLabel: CLASS_LABELS[cls],
+      probability: prob
     }))
-    .sort((a, b) => b.value - a.value);
+    .sort((a, b) => b.probability - a.probability);
+
+  return entries.slice(0, topN);
+}
+
+// Helper: Convertir HTMLImageElement a Canvas
+async function imageElementToCanvas(img: HTMLImageElement): Promise<HTMLCanvasElement> {
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('No se pudo obtener contexto 2D');
+  
+  ctx.drawImage(img, 0, 0);
+  return canvas;
 }
