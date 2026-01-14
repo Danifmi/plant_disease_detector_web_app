@@ -3,7 +3,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { loadModel, isModelLoaded, disposeModel, getModelInfo } from '@/lib/ml/model';
+import { loadModel, isModelLoaded, getModelInfo, disposeModel } from '@/lib/ml/model-loader';
 
 interface ModelState {
   isLoading: boolean;

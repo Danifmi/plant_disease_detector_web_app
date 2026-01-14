@@ -9,7 +9,7 @@ import { createAnalysisResult } from '@/lib/ml/postprocess';
 import { segmentDiseaseAreas } from '@/lib/opencv/segmentation';
 import { preprocessForModel } from '@/lib/utils/imageUtils';
 import { saveAnalysisToHistory } from '@/lib/utils/storageUtils';
-import { loadModel, isModelLoaded } from '@/lib/ml/model';
+import { loadModel, isModelLoaded } from '@/lib/ml/model-loader';
 
 interface UseAnalysisOptions {
   useOpenCV?: boolean;
