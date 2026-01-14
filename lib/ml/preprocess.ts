@@ -1,94 +1,55 @@
-// lib/ml/preprocess.ts
 import * as tf from '@tensorflow/tfjs';
 
 const IMAGE_SIZE = 224;
 
-/**
- * Preprocesa una imagen para el modelo EfficientNetB0
- * Input: HTMLImageElement, HTMLCanvasElement, ImageData, o string (base64)
- * Output: Tensor4D normalizado [1, 224, 224, 3] en rango [0, 1]
- */
-export async function preprocessImage(
-  imageSource: HTMLImageElement | HTMLCanvasElement | ImageData | string
-): Promise<tf.Tensor4D> {
-  return tf.tidy(() => {
-    let tensor: tf.Tensor3D;
-
-    // Manejar diferentes tipos de entrada
-    if (typeof imageSource === 'string') {
-      // Si es base64, crear elemento de imagen
-      throw new Error('Use imageDataToCanvas() primero para convertir base64 a canvas');
-    } else if (imageSource instanceof ImageData) {
-      // Convertir ImageData a tensor
-      tensor = tf.browser.fromPixels(imageSource);
-    } else {
-      // HTMLImageElement o HTMLCanvasElement
-      tensor = tf.browser.fromPixels(imageSource);
-    }
-
-    // 1. Redimensionar a 224x224
-    const resized = tf.image.resizeBilinear(tensor, [IMAGE_SIZE, IMAGE_SIZE]);
-
-    // 2. Normalizar a [0, 1] dividiendo por 255
-    const normalized = resized.toFloat().div(255.0);
-
-    // 3. Expandir dimensiones para batch [1, 224, 224, 3]
-    const batched = normalized.expandDims(0) as tf.Tensor4D;
-
-    return batched;
-  });
-}
+// ----------------------------------------------------------------------
+// FUNCIONES AUXILIARES (Carga de imágenes y Canvas)
+// ----------------------------------------------------------------------
 
 /**
- * Convierte data URL (base64) a HTMLCanvasElement
+ * Convierte una cadena base64 o URL a un elemento Canvas
  */
-export async function imageDataToCanvas(imageData: string): Promise<HTMLCanvasElement> {
+export async function imageDataToCanvas(imageDataStr: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    
+    img.crossOrigin = 'anonymous';
     img.onload = () => {
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
-      
       const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        resolve(canvas);
-      } else {
-        reject(new Error('No se pudo obtener contexto 2D'));
+      if (!ctx) {
+        reject(new Error('No se pudo obtener el contexto del canvas'));
+        return;
       }
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas);
     };
-    
-    img.onerror = () => reject(new Error('Error cargando imagen'));
-    img.src = imageData;
+    img.onerror = (err) => reject(err);
+    img.src = imageDataStr;
   });
 }
 
 /**
- * Convierte File/Blob a HTMLCanvasElement
+ * Convierte un archivo Blob/File a Canvas
  */
 export async function fileToCanvas(file: Blob): Promise<HTMLCanvasElement> {
-  const reader = new FileReader();
-  
   return new Promise((resolve, reject) => {
-    reader.onload = async (e) => {
-      const dataUrl = e.target?.result as string;
-      try {
-        const canvas = await imageDataToCanvas(dataUrl);
-        resolve(canvas);
-      } catch (error) {
-        reject(error);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (typeof e.target?.result === 'string') {
+        imageDataToCanvas(e.target.result).then(resolve).catch(reject);
+      } else {
+        reject(new Error('Error leyendo el archivo'));
       }
     };
-    
-    reader.onerror = () => reject(new Error('Error leyendo archivo'));
+    reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
 /**
- * Valida que la imagen tenga el tamaño mínimo requerido
+ * Valida el tamaño de la imagen
  */
 export function validateImageSize(
   element: HTMLImageElement | HTMLCanvasElement,
@@ -108,32 +69,66 @@ export function validateImageSize(
 }
 
 /**
- * Recorta imagen al centro (square crop)
+ * Recorta la imagen al centro para que sea cuadrada (Square Crop)
+ * Crucial para evitar que la hoja se deforme al redimensionar.
  */
 export function centerCrop(
   canvas: HTMLCanvasElement,
   targetSize: number = IMAGE_SIZE
 ): HTMLCanvasElement {
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('No se pudo obtener contexto 2D');
-
+  // Calcular el tamaño del cuadrado más grande posible en el centro
   const size = Math.min(canvas.width, canvas.height);
-  const x = (canvas.width - size) / 2;
-  const y = (canvas.height - size) / 2;
+  const sx = (canvas.width - size) / 2;
+  const sy = (canvas.height - size) / 2;
 
-  // Crear nuevo canvas con el recorte
   const croppedCanvas = document.createElement('canvas');
   croppedCanvas.width = targetSize;
   croppedCanvas.height = targetSize;
   
-  const croppedCtx = croppedCanvas.getContext('2d');
-  if (!croppedCtx) throw new Error('No se pudo obtener contexto 2D');
+  const ctx = croppedCanvas.getContext('2d');
+  if (!ctx) throw new Error('No se pudo obtener contexto 2D');
 
-  croppedCtx.drawImage(
-    canvas,
-    x, y, size, size,  // fuente
-    0, 0, targetSize, targetSize  // destino
-  );
-
+  // Recortar centro y redimensionar al targetSize (224)
+  ctx.drawImage(canvas, sx, sy, size, size, 0, 0, targetSize, targetSize);
+  
   return croppedCanvas;
+}
+
+// ----------------------------------------------------------------------
+// FUNCIÓN PRINCIPAL DE PREPROCESAMIENTO
+// ----------------------------------------------------------------------
+
+/**
+ * Preprocesa la imagen para EfficientNet (Rango 0-255)
+ * IMPORTANTE: El modelo espera valores de píxeles entre 0 y 255.
+ * NO dividir por 255.
+ */
+export async function preprocessImage(
+  imageSource: HTMLImageElement | HTMLCanvasElement | ImageData | string
+): Promise<tf.Tensor4D> {
+  return tf.tidy(() => {
+    let tensor: tf.Tensor3D;
+
+    // 1. Convertir fuente a Tensor de píxeles [0, 255] (int32)
+    if (typeof imageSource === 'string') {
+       throw new Error('Usa imageDataToCanvas() antes de llamar a preprocessImage con un string');
+    } else if (imageSource instanceof ImageData) {
+      tensor = tf.browser.fromPixels(imageSource);
+    } else {
+      // HTMLImageElement o HTMLCanvasElement
+      tensor = tf.browser.fromPixels(imageSource);
+    }
+
+    // 2. Redimensionar a 224x224
+    // Usamos resizeBilinear para suavizar.
+    // Nota: Si usaste centerCrop antes, esto solo asegura el tamaño 224x224 final.
+    const resized = tf.image.resizeBilinear(tensor, [IMAGE_SIZE, IMAGE_SIZE]);
+
+    // 3. Convertir a Float32 (sin dividir por 255)
+    // Dejamos los valores en rango 0-255
+    const floatTensor = resized.toFloat(); 
+
+    // 4. Expandir dimensiones a [1, 224, 224, 3] y forzar el tipo Tensor4D
+    return floatTensor.expandDims(0) as tf.Tensor4D;
+  });
 }
