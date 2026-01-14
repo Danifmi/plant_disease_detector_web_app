@@ -16,7 +16,7 @@ export default function ConfidenceBar({
   const percentage = value * 100;
 
   return (
-    <div className={`${isMain ? 'scale-105 origin-left' : ''}`}>
+    <div>
       <div className="flex items-center justify-between mb-1">
         <span className={`text-sm ${isMain ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>
           {label}

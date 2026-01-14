@@ -9,6 +9,7 @@ import DiseaseOverlay from './DiseaseOverlay';
 import Recommendations from './Recommendations';
 import { DISEASES_INFO, getTreatmentRecommendations } from '@/lib/constants/diseases';
 import { AnalysisResult as AnalysisResultType } from '@/types/analysis';
+import { formatProcessingTime } from '@/lib/ml/postprocess';
 
 interface AnalysisResultProps {
   result: AnalysisResultType;
@@ -156,7 +157,7 @@ export default function AnalysisResult({ result, imageUrl }: AnalysisResultProps
 
           {/* Processing time */}
           <div className="text-sm text-gray-500">
-            Tiempo de procesamiento: {result.processingTime.toFixed(2)}s
+            Tiempo de procesamiento del modelo: {formatProcessingTime(result.processingTime)}
           </div>
         </CardContent>
       </Card>

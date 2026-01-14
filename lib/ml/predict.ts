@@ -2,10 +2,9 @@
 import * as tf from '@tensorflow/tfjs';
 import { loadModel } from './model-loader';
 import { preprocessImage, imageDataToCanvas, fileToCanvas, centerCrop } from './preprocess';
-import { segmentDiseaseAreas } from '@/lib/opencv/segmentation';
-import { DiseaseType, AffectedArea } from '@/types/analysis';
+import { DiseaseType } from '@/types/analysis';
 
-// Interfaz extendida para incluir la imagen procesada
+// Interfaz de resultado de predicción
 export interface PredictionResult {
   disease: DiseaseType;
   classLabel: string;
@@ -17,9 +16,6 @@ export interface PredictionResult {
     scab: number;
   };
   executionTime: number;
-  // Nuevos campos para visualización
-  processedImage?: string; 
-  affectedAreas?: AffectedArea[];
 }
 
 const CLASS_LABELS: Record<string, string> = {
@@ -77,31 +73,6 @@ export async function predictDisease(
     }
 
     const predictedClass = classes[maxIndex] as DiseaseType;
-    
-    // 5. POST-PROCESAMIENTO CON OPENCV (Visualización)
-    let processedImage: string | undefined;
-    let affectedAreas: AffectedArea[] | undefined;
-
-    // Solo intentamos segmentar si hay enfermedad y confianza suficiente
-    if (predictedClass !== 'healthy' && maxProb > 0.3) {
-      console.log(`🔍 Iniciando segmentación para: ${predictedClass}`);
-      
-      // Pasamos el canvas ORIGINAL (no el recortado) para mostrar la imagen completa al usuario
-      const segmentation = await segmentDiseaseAreas(
-        canvas,
-        predictedClass as 'rust' | 'scab' | 'multiple_diseases',
-        canvas.width,
-        canvas.height
-      );
-
-      if (segmentation) {
-        processedImage = segmentation.processedImage;
-        affectedAreas = segmentation.areas;
-        console.log('✅ Segmentación completada');
-      } else {
-        console.warn('⚠️ Segmentación falló o OpenCV no cargó a tiempo');
-      }
-    }
 
     const executionTime = performance.now() - startTime;
 
@@ -115,9 +86,7 @@ export async function predictDisease(
         rust: probabilities[2],
         scab: probabilities[3]
       },
-      executionTime,
-      processedImage, // Aquí va la imagen con contornos rojos
-      affectedAreas
+      executionTime
     };
 
   } catch (error) {

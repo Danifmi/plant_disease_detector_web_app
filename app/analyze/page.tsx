@@ -19,13 +19,15 @@ export default function AnalyzePage() {
   const { state, analyze, reset } = useAnalysis();
 
   const handleCameraCapture = useCallback(async (data: { blob: Blob; dataUrl: string }) => {
+    // Usamos la dataUrl (string) tanto para mostrar como para analizar y guardar en historial
     setCapturedImage(data.dataUrl);
-    await analyze(data.blob);
+    await analyze(data.dataUrl);
   }, [analyze]);
 
   const handleImageSelect = useCallback(async (file: File, previewUrl: string) => {
+    // Usamos la URL de preview generada como string para el análisis e historial
     setCapturedImage(previewUrl);
-    await analyze(file);
+    await analyze(previewUrl);
   }, [analyze]);
 
   const handleReset = useCallback(() => {
