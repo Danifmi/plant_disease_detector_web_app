@@ -65,8 +65,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     
     console.log('📊 Imagen recibida, longitud:', body.image.length);
     
-    // Importar opencv-wasm
-    let cv: any;
+    // Importar opencv-wasm (opcional)
+    let cv: any = null;
     try {
       const opencvWasm: any = await import('opencv-wasm');
       // El paquete está publicado como CommonJS (module.exports = { cv, cvTranslateError })
@@ -80,17 +80,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       console.log('✅ opencv-wasm cargado correctamente');
     } catch (importError: any) {
       const message = importError instanceof Error ? importError.message : String(importError);
-      console.error('❌ Error al importar opencv-wasm:', importError);
-
-      return NextResponse.json({
-        success: false,
-        error: `opencv-wasm no disponible: ${message}`,
-        masks: { rust: null, scab: null, healthy: null },
-        overlayImage: null,
-        percentages: { healthy: 0, rust: 0, scab: 0, background: 100 },
-        contours: { rust: [], scab: [] },
-        processingTime: 0
-      });
+      console.warn('⚠️ No se pudo importar opencv-wasm, se usará modo básico:', message);
+      cv = null;
     }
     
     // Decodificar imagen con sharp
@@ -300,43 +291,45 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     
     console.log('📊 Porcentajes:', percentages);
     
-    // Analizar contornos con OpenCV
+    // Analizar contornos con OpenCV (si está disponible)
     let rustContourData: any[] = [];
     let scabContourData: any[] = [];
     
-    try {
-      const rustMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(rustMaskData));
-      const scabMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(scabMaskData));
-      
-      // Operaciones morfológicas
-      const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
-      cv.morphologyEx(rustMat, rustMat, cv.MORPH_OPEN, kernel);
-      cv.morphologyEx(scabMat, scabMat, cv.MORPH_OPEN, kernel);
-      
-      // Contornos rust
-      const rustContours = new cv.MatVector();
-      const rustHierarchy = new cv.Mat();
-      cv.findContours(rustMat, rustContours, rustHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      rustContourData = analyzeContours(cv, rustContours, totalPixels);
-      
-      // Contornos scab
-      const scabContours = new cv.MatVector();
-      const scabHierarchy = new cv.Mat();
-      cv.findContours(scabMat, scabContours, scabHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      scabContourData = analyzeContours(cv, scabContours, totalPixels);
-      
-      // Cleanup
-      rustMat.delete();
-      scabMat.delete();
-      kernel.delete();
-      rustContours.delete();
-      rustHierarchy.delete();
-      scabContours.delete();
-      scabHierarchy.delete();
-      
-      console.log('✅ Contornos:', rustContourData.length, 'rust,', scabContourData.length, 'scab');
-    } catch (e) {
-      console.warn('⚠️ Error en contornos:', e);
+    if (cv) {
+      try {
+        const rustMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(rustMaskData));
+        const scabMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(scabMaskData));
+        
+        // Operaciones morfológicas
+        const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+        cv.morphologyEx(rustMat, rustMat, cv.MORPH_OPEN, kernel);
+        cv.morphologyEx(scabMat, scabMat, cv.MORPH_OPEN, kernel);
+        
+        // Contornos rust
+        const rustContours = new cv.MatVector();
+        const rustHierarchy = new cv.Mat();
+        cv.findContours(rustMat, rustContours, rustHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        rustContourData = analyzeContours(cv, rustContours, totalPixels);
+        
+        // Contornos scab
+        const scabContours = new cv.MatVector();
+        const scabHierarchy = new cv.Mat();
+        cv.findContours(scabMat, scabContours, scabHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        scabContourData = analyzeContours(cv, scabContours, totalPixels);
+        
+        // Cleanup
+        rustMat.delete();
+        scabMat.delete();
+        kernel.delete();
+        rustContours.delete();
+        rustHierarchy.delete();
+        scabContours.delete();
+        scabHierarchy.delete();
+        
+        console.log('✅ Contornos:', rustContourData.length, 'rust,', scabContourData.length, 'scab');
+      } catch (e) {
+        console.warn('⚠️ Error en contornos:', e);
+      }
     }
     
     // Generar imágenes PNG con sharp

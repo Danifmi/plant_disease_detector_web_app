@@ -49,7 +49,7 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['opencv-wasm'],
     outputFileTracingIncludes: {
-      'app/api/segment/route': ['./node_modules/opencv-wasm/opencv.wasm']
+      '/api/segment': ['./node_modules/opencv-wasm/opencv.wasm']
     }
   },
 
