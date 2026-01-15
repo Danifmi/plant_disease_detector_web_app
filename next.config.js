@@ -45,6 +45,10 @@ const nextConfig = {
     return config;
   },
 
+  experimental: {
+    serverComponentsExternalPackages: ['opencv-wasm']
+  },
+
   // Optimización de imágenes
   images: {
     formats: ['image/avif', 'image/webp'],
