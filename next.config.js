@@ -37,10 +37,10 @@ const nextConfig = {
     }
     
     // Excluir OpenCV.js de SSR
-    config.externals = config.externals || [];
-    if (isServer) {
-      config.externals.push('opencv.js');
-    }
+    // config.externals = config.externals || [];
+    // if (isServer) {
+    //   config.externals.push('opencv.js');
+    // }
 
     return config;
   },
