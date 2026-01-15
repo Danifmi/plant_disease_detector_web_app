@@ -49,6 +49,7 @@ export async function GET(): Promise<NextResponse> {
  * POST /api/segment
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  console.log('🚀 API Segment: Iniciando (versión con OpenCV opcional)');
   console.log('📥 API /api/segment: Recibida petición POST');
   const startTime = Date.now();
   
