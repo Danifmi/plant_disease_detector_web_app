@@ -99,7 +99,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const imageBuffer = Buffer.from(base64Data, 'base64');
     
     // Redimensionar imagen y obtener datos RGB raw
-    const maxDim = 400;
+    const maxDim = 300;
     const resizedImage = sharp(imageBuffer)
       .resize(maxDim, maxDim, {
         fit: 'cover',
