@@ -68,13 +68,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Importar opencv-wasm
     let cv: any;
     try {
-      const opencvWasm = await import('opencv-wasm');
-      cv = opencvWasm.cv;
-      console.log('✅ opencv-wasm cargado');
-    } catch (importError) {
+      const opencvWasm: any = await import('opencv-wasm');
+      // El paquete está publicado como CommonJS (module.exports = { cv, cvTranslateError })
+      // En Next/webpack, el import dinámico devuelve ese objeto directamente.
+      cv = opencvWasm.cv || (opencvWasm.default && opencvWasm.default.cv);
+
+      if (!cv) {
+        throw new Error('opencv-wasm cargado pero sin propiedad cv');
+      }
+
+      console.log('✅ opencv-wasm cargado correctamente');
+    } catch (importError: any) {
+      const message = importError instanceof Error ? importError.message : String(importError);
+      console.error('❌ Error al importar opencv-wasm:', importError);
+
       return NextResponse.json({
         success: false,
-        error: `opencv-wasm no disponible`,
+        error: `opencv-wasm no disponible: ${message}`,
         masks: { rust: null, scab: null, healthy: null },
         overlayImage: null,
         percentages: { healthy: 0, rust: 0, scab: 0, background: 100 },

@@ -27,6 +27,13 @@ const nextConfig = {
 
   // Configuración de Webpack para TensorFlow.js y OpenCV
   webpack: (config, { isServer }) => {
+    // Habilitar soporte para WebAssembly (necesario para opencv-wasm)
+    config.experiments = {
+      ...config.experiments,
+      asyncWebAssembly: true,
+      layers: true
+    };
+
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -35,12 +42,6 @@ const nextConfig = {
         crypto: false
       };
     }
-    
-    // Excluir OpenCV.js de SSR
-    // config.externals = config.externals || [];
-    // if (isServer) {
-    //   config.externals.push('opencv.js');
-    // }
 
     return config;
   },
