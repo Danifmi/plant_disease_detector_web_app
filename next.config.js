@@ -47,7 +47,10 @@ const nextConfig = {
   },
 
   experimental: {
-    serverComponentsExternalPackages: ['opencv-wasm']
+    serverComponentsExternalPackages: ['opencv-wasm'],
+    outputFileTracingIncludes: {
+      'app/api/segment/route': ['./node_modules/opencv-wasm/opencv.wasm']
+    }
   },
 
   // Optimización de imágenes
