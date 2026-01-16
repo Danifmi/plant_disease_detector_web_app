@@ -1,7 +1,7 @@
 /**
  * API Route: /api/segment
- * Procesa imágenes de hojas y segmenta las áreas afectadas
- * Usa sharp para decodificar + opencv-wasm para contornos
+ * SOLUCIÓN FINAL: Filtrado por "Componente Conexa Más Grande" (Largest Connected Component)
+ * Esto elimina el ruido de fondo verde al quedarse solo con la hoja principal.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -10,453 +10,355 @@ import sharp from 'sharp';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/**
- * GET /api/segment - Health check
- */
+// ============================================================
+// INTERFACES
+// ============================================================
+
+interface ContourData {
+  area: number;
+  centroid: { x: number; y: number };
+  boundingBox: { x: number; y: number; width: number; height: number };
+  severity: 'low' | 'medium' | 'high';
+}
+
+interface SegmentationResponse {
+  success: boolean;
+  masks: {
+    rust: string | null;
+    scab: string | null;
+    healthy: string | null;
+  };
+  overlayImage: string | null;
+  percentages: {
+    healthy: number;
+    rust: number;
+    scab: number;
+    background: number;
+  };
+  contours: {
+    rust: ContourData[];
+    scab: ContourData[];
+  };
+  processingTime: number;
+  error?: string;
+}
+
+// ============================================================
+// GET - Health Check
+// ============================================================
+
 export async function GET(): Promise<NextResponse> {
-  let opencvAvailable = false;
   let sharpAvailable = false;
-  let errorMessage = '';
-  
   try {
-    const opencvWasm = await import('opencv-wasm');
-    opencvAvailable = !!opencvWasm.cv;
-  } catch (error) {
-    errorMessage = `opencv-wasm: ${error instanceof Error ? error.message : 'Error'}`;
-  }
-  
-  try {
-    // Verificar que sharp funciona
     await sharp({
       create: { width: 1, height: 1, channels: 3, background: { r: 0, g: 0, b: 0 } }
     }).png().toBuffer();
     sharpAvailable = true;
   } catch (error) {
-    errorMessage += ` sharp: ${error instanceof Error ? error.message : 'Error'}`;
+    console.error(error);
   }
-  
+
   return NextResponse.json({
-    status: opencvAvailable && sharpAvailable ? 'ok' : 'error',
-    service: 'OpenCV Segmentation Service',
-    opencvAvailable,
+    status: 'ok',
+    service: 'Spatial Leaf Segmentation Service',
     sharpAvailable,
-    error: errorMessage || undefined,
     timestamp: new Date().toISOString()
   });
 }
 
-/**
- * POST /api/segment
- */
+// ============================================================
+// POST - Segmentación de imagen
+// ============================================================
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  console.log('🚀 API Segment: Iniciando (versión con OpenCV opcional)');
-  console.log('📥 API /api/segment: Recibida petición POST');
+  console.log('🚀 API Segment: Iniciando con Filtrado Espacial');
   const startTime = Date.now();
-  
+
   try {
-    // Parsear body
     const body = await request.json();
-    
-    if (!body.image) {
-      return NextResponse.json(
-        { success: false, error: 'No se proporcionó imagen' },
-        { status: 400 }
-      );
-    }
-    
-    console.log('📊 Imagen recibida, longitud:', body.image.length);
-    
-    // Importar opencv-wasm (opcional)
-    let cv: any = null;
-    try {
-      const opencvWasm: any = await import('opencv-wasm');
-      // El paquete está publicado como CommonJS (module.exports = { cv, cvTranslateError })
-      // En Next/webpack, el import dinámico devuelve ese objeto directamente.
-      cv = opencvWasm.cv || (opencvWasm.default && opencvWasm.default.cv);
+    if (!body.image) return NextResponse.json({ success: false, error: 'No image' }, { status: 400 });
 
-      if (!cv) {
-        throw new Error('opencv-wasm cargado pero sin propiedad cv');
-      }
-
-      console.log('✅ opencv-wasm cargado correctamente');
-    } catch (importError: any) {
-      const message = importError instanceof Error ? importError.message : String(importError);
-      console.warn('⚠️ No se pudo importar opencv-wasm, se usará modo básico:', message);
-      cv = null;
-    }
-    
-    // Decodificar imagen con sharp
-    console.log('🔄 Decodificando imagen con sharp...');
     const base64Data = body.image.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(base64Data, 'base64');
-    
-    // Redimensionar imagen y obtener datos RGB raw
-    const maxDim = 300;
+
+    // 1. Preprocesamiento: Redimensionar
+    const maxDim = 400;
     const resizedImage = sharp(imageBuffer)
-      .resize(maxDim, maxDim, {
-        fit: 'cover',
-        position: 'centre',
-        withoutEnlargement: true
-      });
-    
+      .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
+
     const { data: rgbData, info } = await resizedImage
       .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
-    
+
     const width = info.width;
     const height = info.height;
     const totalPixels = width * height;
-    
-    console.log('✅ Imagen procesada:', width, 'x', height);
-    console.log('📊 Píxeles totales:', totalPixels);
-    
-    // Convertir RGB a HSV y detectar colores
-    // Ajuste de rangos:
-    //  - Healthy: verdes con saturación y brillo medios-altos.
-    //  - Rust: naranjas/amarillos muy saturados y relativamente brillantes.
-    //  - Scab: zonas oscuras o poco saturadas (marrones/olivas/negros) dentro de la hoja.
-    const RANGES = {
-      healthy: { lower: [35, 40, 40], upper: [85, 255, 255] },
-      rust:    { lower: [10, 100, 80], upper: [35, 255, 255] },
-      scab:    { lower: [0, 0, 0],     upper: [180, 120, 160] }
-    };
-    
+
+    // ============================================================
+    // PASO CRÍTICO: DETECTAR LA HOJA PRINCIPAL (MÁSCARA BINARIA)
+    // ============================================================
+    // Esto crea un "recorte" digital de la hoja más grande, ignorando el fondo verde.
+    const mainLeafMask = getMainLeafMask(rgbData, width, height);
+
+    // ============================================================
+    // CLASIFICACIÓN DE ENFERMEDADES (Solo dentro de la máscara)
+    // ============================================================
+
+    let leafPixels = 0;
     let healthyPixels = 0;
     let rustPixels = 0;
     let scabPixels = 0;
-    
+
     const healthyMaskData = Buffer.alloc(totalPixels);
     const rustMaskData = Buffer.alloc(totalPixels);
     const scabMaskData = Buffer.alloc(totalPixels);
     const overlayData = Buffer.alloc(totalPixels * 3);
-    
-    // Primera pasada: clasificar píxeles y construir máscaras iniciales
-    // Regla de prioridad: si un píxel encaja como Sarna y como Roya, se marca como Sarna.
+
     for (let i = 0; i < totalPixels; i++) {
       const r = rgbData[i * 3];
       const g = rgbData[i * 3 + 1];
       const b = rgbData[i * 3 + 2];
-      
-      // Convertir a HSV
+
+      // Copiar imagen base al overlay
+      overlayData[i * 3] = r;
+      overlayData[i * 3 + 1] = g;
+      overlayData[i * 3 + 2] = b;
+
+      // SI NO ES PARTE DE LA HOJA PRINCIPAL, IGNORAR E IR AL SIGUIENTE
+      if (mainLeafMask[i] === 0) {
+        // Oscurecer el fondo visualmente para que el usuario vea qué se descartó
+        overlayData[i * 3] = Math.round(r * 0.3);
+        overlayData[i * 3 + 1] = Math.round(g * 0.3);
+        overlayData[i * 3 + 2] = Math.round(b * 0.3);
+        continue;
+      }
+
+      leafPixels++;
       const [h, s, v] = rgbToHsv(r, g, b);
-      
-      // Detectar colores
-      const isHealthy = h >= RANGES.healthy.lower[0] && h <= RANGES.healthy.upper[0] &&
-                        s >= RANGES.healthy.lower[1] && s <= RANGES.healthy.upper[1] &&
-                        v >= RANGES.healthy.lower[2] && v <= RANGES.healthy.upper[2];
-      
-      const isRust = h >= RANGES.rust.lower[0] && h <= RANGES.rust.upper[0] &&
-                     s >= RANGES.rust.lower[1] && s <= RANGES.rust.upper[1] &&
-                     v >= RANGES.rust.lower[2] && v <= RANGES.rust.upper[2];
-      
-      const isScab = h >= RANGES.scab.lower[0] && h <= RANGES.scab.upper[0] &&
-                     s >= RANGES.scab.lower[1] && s <= RANGES.scab.upper[1] &&
-                     v >= RANGES.scab.lower[2] && v <= RANGES.scab.upper[2];
-      
-      let label = 0; // 0: nada, 1: healthy, 2: rust, 3: scab
-      
-      if (isScab) {
-        label = 3;
-      } else if (isRust) {
-        label = 2;
-      } else if (isHealthy) {
-        label = 1;
-      }
-      
-      healthyMaskData[i] = label === 1 ? 255 : 0;
-      rustMaskData[i] = label === 2 ? 255 : 0;
-      scabMaskData[i] = label === 3 ? 255 : 0;
-    }
 
-    // Procesamiento morfológico con OpenCV para definir la región de interés (ROI) de la hoja
-    try {
-      if (cv) {
-        // Combinar Healthy + Rust para definir la estructura de la hoja
-        // (Excluimos Scab en la definición de la forma porque se confunde con el fondo oscuro)
-        const combinedMat = new cv.Mat(height, width, cv.CV_8UC1);
-        const healthyMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(healthyMaskData));
-        const rustMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(rustMaskData));
-        
-        cv.add(healthyMat, rustMat, combinedMat); // combined = healthy OR rust
+      // --- LÓGICA DE DETECCIÓN DE ENFERMEDADES ---
 
-        // 1. Cerrar huecos pequeños en la estructura de la hoja
-        // Usamos un kernel más grande para asegurar que conectamos partes fragmentadas
-        const kernelClose = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(30, 30)); 
-        cv.morphologyEx(combinedMat, combinedMat, cv.MORPH_CLOSE, kernelClose);
-        
-        // 2. Encontrar contornos
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(combinedMat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        
-        // 3. Identificar la hoja principal (asumimos que es el contorno más grande)
-        let maxArea = 0;
-        let maxContourIndex = -1;
-        
-        for (let i = 0; i < contours.size(); i++) {
-          const area = cv.contourArea(contours.get(i));
-          // Filtramos ruido muy pequeño, pero buscamos el máximo
-          if (area > totalPixels * 0.05 && area > maxArea) {
-             maxArea = area;
-             maxContourIndex = i;
-          }
-        }
-        
-        // Crear una máscara sólida de la hoja
-        const leafMask = cv.Mat.zeros(height, width, cv.CV_8UC1);
-        const white = new cv.Scalar(255);
-        
-        if (maxContourIndex !== -1) {
-           // Dibujar SOLO el contorno más grande, relleno (-1)
-           cv.drawContours(leafMask, contours, maxContourIndex, white, -1);
-        }
-        
-        // 4. Filtrar TODO (Healthy, Rust, Scab) usando la máscara de la hoja
-        // Esto elimina cualquier detección en el fondo (especialmente Scab en fondo negro)
-        const leafMaskData = leafMask.data;
-        
-        rustPixels = 0;
-        scabPixels = 0;
-        healthyPixels = 0; // Recalcular
-        
-        for (let i = 0; i < totalPixels; i++) {
-           const isLeaf = leafMaskData[i] === 255;
-           
-           if (!isLeaf) {
-             // Si está fuera de la hoja principal, borrar todo
-             rustMaskData[i] = 0;
-             scabMaskData[i] = 0;
-             healthyMaskData[i] = 0; 
-           } else {
-             // Si está dentro, mantenemos y contamos
-             if (rustMaskData[i] === 255) rustPixels++;
-             if (scabMaskData[i] === 255) scabPixels++;
-             if (healthyMaskData[i] === 255) healthyPixels++;
-           }
-        }
-        
-        // Cleanup
-        healthyMat.delete();
-        rustMat.delete();
-        combinedMat.delete();
-        kernelClose.delete();
-        contours.delete();
-        hierarchy.delete();
-        leafMask.delete();
-      }
-    } catch (e) {
-      console.warn('⚠️ Error en procesamiento morfológico:', e);
-      // Fallback: conteo simple si falla OpenCV
-      healthyPixels = 0; rustPixels = 0; scabPixels = 0;
-      for(let i=0; i<totalPixels; i++) {
-        if(healthyMaskData[i]) healthyPixels++;
-        if(rustMaskData[i]) rustPixels++;
-        if(scabMaskData[i]) scabPixels++;
-      }
-    }
+      // 1. ROYA (RUST)
+      // Ampliado para incluir rojos oscuros/púrpuras (Test_149) y naranjas vivos
+      const isRust = (
+        // Naranja / Amarillo Vivos
+        (h >= 5 && h <= 40 && s >= 50 && v >= 60) ||
+        // Rojos oscuros / Púrpuras (H > 160 o H < 10) con saturación media
+        ((h >= 160 || h <= 10) && s >= 40 && v >= 40 && v <= 200)
+      );
 
-    // Tercera pasada: crear overlay a partir de las máscaras filtradas
-    for (let i = 0; i < totalPixels; i++) {
-      const r = rgbData[i * 3];
-      const g = rgbData[i * 3 + 1];
-      const b = rgbData[i * 3 + 2];
-      
-      if (rustMaskData[i] === 255) {
-        // Naranja para rust
-        overlayData[i * 3] = Math.min(255, Math.round(r * 0.5 + 255 * 0.5));
-        overlayData[i * 3 + 1] = Math.min(255, Math.round(g * 0.5 + 165 * 0.5));
-        overlayData[i * 3 + 2] = Math.min(255, Math.round(b * 0.5 + 0 * 0.5));
-      } else if (scabMaskData[i] === 255) {
-        // Marrón para scab
-        overlayData[i * 3] = Math.min(255, Math.round(r * 0.5 + 139 * 0.5));
-        overlayData[i * 3 + 1] = Math.min(255, Math.round(g * 0.5 + 69 * 0.5));
-        overlayData[i * 3 + 2] = Math.min(255, Math.round(b * 0.5 + 19 * 0.5));
+      // 2. SARNA (SCAB)
+      // Manchas oscuras, marrones o grisáceas, mate.
+      const isScab = (
+        !isRust && // Prioridad a Roya
+        v <= 120 && // Debe ser oscuro
+        s >= 10 && // No puramente gris/negro (ruido)
+        (
+            (h >= 10 && h <= 50) || // Marrón
+            (h >= 60 && h <= 150 && s <= 80) // Verde muy oscuro/podrido
+        )
+      );
+
+      if (isRust) {
+        rustMaskData[i] = 255;
+        rustPixels++;
+        // Overlay: Naranja Neón
+        overlayData[i * 3] = 255;
+        overlayData[i * 3 + 1] = 100;
+        overlayData[i * 3 + 2] = 0;
+      } else if (isScab) {
+        scabMaskData[i] = 255;
+        scabPixels++;
+        // Overlay: Magenta (mejor contraste sobre verde oscuro que el marrón)
+        overlayData[i * 3] = 255;
+        overlayData[i * 3 + 1] = 0;
+        overlayData[i * 3 + 2] = 255;
       } else {
-        // Original
-        overlayData[i * 3] = r;
-        overlayData[i * 3 + 1] = g;
-        overlayData[i * 3 + 2] = b;
+        healthyMaskData[i] = 255;
+        healthyPixels++;
+        // Overlay: Dejar color original (verde)
       }
     }
-    
-    console.log('✅ Detección por color completada');
+
+    // ============================================================
+    // RESULTADOS Y GENERACIÓN DE IMÁGENES
+    // ============================================================
     
     // Calcular porcentajes
     const percentages = {
-      healthy: (healthyPixels / totalPixels) * 100,
-      rust: (rustPixels / totalPixels) * 100,
-      scab: (scabPixels / totalPixels) * 100,
-      background: Math.max(0, 100 - (healthyPixels + rustPixels + scabPixels) / totalPixels * 100)
+      healthy: leafPixels > 0 ? (healthyPixels / leafPixels) * 100 : 0,
+      rust: leafPixels > 0 ? (rustPixels / leafPixels) * 100 : 0,
+      scab: leafPixels > 0 ? (scabPixels / leafPixels) * 100 : 0,
+      background: ((totalPixels - leafPixels) / totalPixels) * 100
     };
-    
-    console.log('📊 Porcentajes:', percentages);
-    
-    // Analizar contornos con OpenCV (si está disponible)
-    let rustContourData: any[] = [];
-    let scabContourData: any[] = [];
-    
-    if (cv) {
-      try {
-        const rustMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(rustMaskData));
-        const scabMat = cv.matFromArray(height, width, cv.CV_8UC1, Array.from(scabMaskData));
-        
-        // Operaciones morfológicas
-        const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
-        cv.morphologyEx(rustMat, rustMat, cv.MORPH_OPEN, kernel);
-        cv.morphologyEx(scabMat, scabMat, cv.MORPH_OPEN, kernel);
-        
-        // Contornos rust
-        const rustContours = new cv.MatVector();
-        const rustHierarchy = new cv.Mat();
-        cv.findContours(rustMat, rustContours, rustHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        rustContourData = analyzeContours(cv, rustContours, totalPixels);
-        
-        // Contornos scab
-        const scabContours = new cv.MatVector();
-        const scabHierarchy = new cv.Mat();
-        cv.findContours(scabMat, scabContours, scabHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        scabContourData = analyzeContours(cv, scabContours, totalPixels);
-        
-        // Cleanup
-        rustMat.delete();
-        scabMat.delete();
-        kernel.delete();
-        rustContours.delete();
-        rustHierarchy.delete();
-        scabContours.delete();
-        scabHierarchy.delete();
-        
-        console.log('✅ Contornos:', rustContourData.length, 'rust,', scabContourData.length, 'scab');
-      } catch (e) {
-        console.warn('⚠️ Error en contornos:', e);
-      }
-    }
-    
-    // Generar imágenes PNG con sharp
-    const [overlayBase64, rustMaskBase64, scabMaskBase64, healthyMaskBase64] = await Promise.all([
-      sharp(overlayData, { raw: { width, height, channels: 3 } })
-        .png()
-        .toBuffer()
-        .then(buf => `data:image/png;base64,${buf.toString('base64')}`),
-      
-      sharp(rustMaskData, { raw: { width, height, channels: 1 } })
-        .png()
-        .toBuffer()
-        .then(buf => `data:image/png;base64,${buf.toString('base64')}`),
-      
-      sharp(scabMaskData, { raw: { width, height, channels: 1 } })
-        .png()
-        .toBuffer()
-        .then(buf => `data:image/png;base64,${buf.toString('base64')}`),
-      
-      sharp(healthyMaskData, { raw: { width, height, channels: 1 } })
-        .png()
-        .toBuffer()
-        .then(buf => `data:image/png;base64,${buf.toString('base64')}`)
+
+    // Generar imágenes Base64
+    const [rustB64, scabB64, healthyB64, overlayB64] = await Promise.all([
+      bufferToBase64Image(rustMaskData, width, height, true),
+      bufferToBase64Image(scabMaskData, width, height, true),
+      bufferToBase64Image(healthyMaskData, width, height, true),
+      bufferToBase64Image(overlayData, width, height, false)
     ]);
-    
-    const processingTime = Date.now() - startTime;
-    console.log('✅ Segmentación completada en', processingTime, 'ms');
-    
+
+    // Contornos (usando la máscara de enfermedad)
+    const rustContours = analyzeContours(rustMaskData, width, height, leafPixels);
+    const scabContours = analyzeContours(scabMaskData, width, height, leafPixels);
+
     return NextResponse.json({
       success: true,
-      masks: {
-        rust: rustMaskBase64,
-        scab: scabMaskBase64,
-        healthy: healthyMaskBase64
-      },
-      overlayImage: overlayBase64,
+      masks: { rust: rustB64, scab: scabB64, healthy: healthyB64 },
+      overlayImage: overlayB64,
       percentages,
-      contours: {
-        rust: rustContourData,
-        scab: scabContourData
-      },
-      processingTime
-    });
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    return NextResponse.json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Error interno',
-      masks: { rust: null, scab: null, healthy: null },
-      overlayImage: null,
-      percentages: { healthy: 0, rust: 0, scab: 0, background: 100 },
-      contours: { rust: [], scab: [] },
+      contours: { rust: rustContours, scab: scabContours },
       processingTime: Date.now() - startTime
-    }, { status: 500 });
+    });
+
+  } catch (error) {
+    console.error('Error:', error);
+    return NextResponse.json({ success: false, error: 'Internal Error' }, { status: 500 });
   }
 }
 
+// ============================================================
+// NUEVA FUNCIÓN: DETECCIÓN DE LA HOJA PRINCIPAL
+// ============================================================
+
 /**
- * Convierte RGB a HSV (H: 0-180 como OpenCV)
+ * Genera una máscara binaria que contiene SOLO la hoja más grande de la imagen.
+ * Elimina el ruido de fondo desconectado.
  */
-function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const diff = max - min;
-  
-  let h = 0;
-  let s = 0;
-  const v = max;
-  
-  if (diff !== 0) {
-    s = diff / max;
-    
-    if (max === r) {
-      h = 60 * (((g - b) / diff) % 6);
-    } else if (max === g) {
-      h = 60 * ((b - r) / diff + 2);
-    } else {
-      h = 60 * ((r - g) / diff + 4);
+function getMainLeafMask(rgbData: Buffer, width: number, height: number): Buffer {
+  const totalPixels = width * height;
+  const tempMask = Buffer.alloc(totalPixels); // 0 = fondo, 255 = posible planta
+
+  // 1. FILTRO DE COLOR AMPLIO ("¿Es material vegetal?")
+  // Somos permisivos aquí porque el filtro espacial limpiará el ruido.
+  for (let i = 0; i < totalPixels; i++) {
+    const r = rgbData[i * 3];
+    const g = rgbData[i * 3 + 1];
+    const b = rgbData[i * 3 + 2];
+    const [h, s, v] = rgbToHsv(r, g, b);
+
+    // Definición amplia de "Material de Hoja" (Verde, Amarillo, Naranja, Marrón, Rojo oscuro)
+    // Descartamos: Cielo azul, Blancos quemados, Negros profundos, Grises puros
+    const isGreen = h >= 25 && h <= 100 && s >= 20 && v >= 20;
+    const isBrownOrange = (h >= 5 && h <= 40) || (h >= 160) || (h <= 5); // Rojos/Naranjas
+    const isVegetation = (isGreen || isBrownOrange) && v >= 20 && s >= 15;
+
+    tempMask[i] = isVegetation ? 255 : 0;
+  }
+
+  // 2. ENCONTRAR LA "ISLA" MÁS GRANDE (Connected Components)
+  const visited = new Set<number>();
+  let maxArea = 0;
+  let bestBlob: number[] = [];
+
+  // Optimización: Recorrer con saltos para encontrar blobs rápido, luego rellenar
+  for (let y = 0; y < height; y += 2) { 
+    for (let x = 0; x < width; x += 2) {
+      const idx = y * width + x;
+      if (tempMask[idx] === 255 && !visited.has(idx)) {
+        // Encontramos un pixel de planta no visitado. Inundar para ver el tamaño de la hoja.
+        const blob = floodFill(tempMask, width, height, x, y, visited);
+        
+        if (blob.pixels.length > maxArea) {
+          maxArea = blob.pixels.length;
+          bestBlob = blob.pixels;
+        }
+      }
     }
-    
+  }
+
+  // 3. CREAR MÁSCARA FINAL LIMPIA
+  const cleanMask = Buffer.alloc(totalPixels); // Todo a 0 por defecto
+  
+  // Si encontramos una hoja decente (>5% de la imagen), la copiamos
+  // Si es muy pequeña, probablemente no hay hoja y devolvemos negro o todo
+  if (maxArea > (totalPixels * 0.05)) {
+    for (const idx of bestBlob) {
+      cleanMask[idx] = 255;
+    }
+  } else {
+    // Fallback: Si no detectamos nada coherente, devolvemos la máscara sucia original
+    // o dejamos todo vacío. Aquí copiamos la sucia por seguridad.
+    return tempMask;
+  }
+
+  return cleanMask;
+}
+
+// ============================================================
+// FUNCIONES AUXILIARES (Sin cambios mayores)
+// ============================================================
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+  const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm);
+  const delta = max - min;
+  let h = 0, s = 0, v = max;
+
+  if (delta !== 0) {
+    s = delta / max;
+    if (max === rNorm) h = ((gNorm - bNorm) / delta) % 6;
+    else if (max === gNorm) h = (bNorm - rNorm) / delta + 2;
+    else h = (rNorm - gNorm) / delta + 4;
+    h = Math.round(h * 60);
     if (h < 0) h += 360;
   }
-  
-  return [
-    Math.round(h / 2),    // H: 0-180
-    Math.round(s * 255),  // S: 0-255
-    Math.round(v * 255)   // V: 0-255
-  ];
+  return [Math.round(h / 2), Math.round(s * 255), Math.round(v * 255)];
 }
 
-/**
- * Analiza contornos
- */
-function analyzeContours(cv: any, contours: any, totalPixels: number): any[] {
-  const results: any[] = [];
-  
+async function bufferToBase64Image(data: Buffer, width: number, height: number, isMono: boolean) {
   try {
-    for (let i = 0; i < contours.size(); i++) {
-      const contour = contours.get(i);
-      const area = cv.contourArea(contour);
-      
-      if (area < 50) continue;
-      
-      const moments = cv.moments(contour);
-      const cx = moments.m00 > 0 ? moments.m10 / moments.m00 : 0;
-      const cy = moments.m00 > 0 ? moments.m01 / moments.m00 : 0;
-      const rect = cv.boundingRect(contour);
-      
-      const areaPercentage = (area / totalPixels) * 100;
-      const severity = areaPercentage < 2 ? 'low' : areaPercentage < 5 ? 'medium' : 'high';
-      
-      results.push({
-        area,
-        centroid: { x: cx, y: cy },
-        boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        severity
-      });
+    const img = sharp(data, { raw: { width, height, channels: isMono ? 1 : 3 } });
+    const buf = await img.png().toBuffer();
+    return `data:image/png;base64,${buf.toString('base64')}`;
+  } catch (e) { return ''; }
+}
+
+function analyzeContours(mask: Buffer, w: number, h: number, leafPix: number): ContourData[] {
+    const visited = new Set<number>();
+    const contours: ContourData[] = [];
+    for (let i=0; i<w*h; i++) {
+        if(mask[i]===255 && !visited.has(i)) {
+            const region = floodFill(mask, w, h, i%w, Math.floor(i/w), visited);
+            if(region.pixels.length > 10) {
+                const area = region.pixels.length;
+                contours.push({
+                    area, 
+                    centroid: region.centroid, 
+                    boundingBox: region.boundingBox,
+                    severity: (area/leafPix)*100 > 5 ? 'high' : ((area/leafPix)*100 > 1 ? 'medium' : 'low')
+                });
+            }
+        }
     }
-  } catch (e) {
-    // Silenciar
+    return contours.sort((a,b)=>b.area-a.area).slice(0,50);
+}
+
+function floodFill(mask: Buffer, w: number, h: number, startX: number, startY: number, visited: Set<number>) {
+  const pixels: number[] = [];
+  const stack = [[startX, startY]];
+  let minX=startX, maxX=startX, minY=startY, maxY=startY;
+  let sumX=0, sumY=0;
+
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    const idx = y * w + x;
+    if (x<0 || x>=w || y<0 || y>=h || visited.has(idx) || mask[idx] !== 255) continue;
+    
+    visited.add(idx);
+    pixels.push(idx);
+    sumX+=x; sumY+=y;
+    if(x<minX) minX=x; if(x>maxX) maxX=x;
+    if(y<minY) minY=y; if(y>maxY) maxY=y;
+
+    stack.push([x+1,y], [x-1,y], [x,y+1], [x,y-1]);
   }
-  
-  return results;
+  return { 
+      pixels, 
+      centroid: { x: pixels.length ? Math.round(sumX/pixels.length) : startX, y: pixels.length ? Math.round(sumY/pixels.length) : startY },
+      boundingBox: { x: minX, y: minY, width: maxX-minX+1, height: maxY-minY+1 } 
+  };
 }

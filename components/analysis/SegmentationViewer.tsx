@@ -1,409 +1,364 @@
 /**
- * SegmentationViewer Component
- * Visualiza los resultados de segmentación con overlay interactivo
+ * API Route: /api/segment
+ * SOLUCIÓN FINAL: Filtrado por "Componente Conexa Más Grande" (Largest Connected Component)
+ * Esto elimina el ruido de fondo verde al quedarse solo con la hoja principal.
  */
 
-'use client';
+import { NextRequest, NextResponse } from 'next/server';
+import sharp from 'sharp';
 
-import { useState } from 'react';
-import { SegmentationResult, SegmentationUtils } from '@/hooks/useSegmentation';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-interface SegmentationViewerProps {
-  originalImage: string;
-  segmentationResult: SegmentationResult;
-  className?: string;
+// ============================================================
+// INTERFACES
+// ============================================================
+
+interface ContourData {
+  area: number;
+  centroid: { x: number; y: number };
+  boundingBox: { x: number; y: number; width: number; height: number };
+  severity: 'low' | 'medium' | 'high';
 }
 
-type ViewMode = 'original' | 'overlay' | 'rust' | 'scab' | 'healthy' | 'split';
-
-export default function SegmentationViewer({
-  originalImage,
-  segmentationResult,
-  className = ''
-}: SegmentationViewerProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('overlay');
-  const [showContours, setShowContours] = useState(true);
-
-  const { masks, overlayImage, percentages, contours, processingTime } = segmentationResult;
-  const formattedPercentages = SegmentationUtils.formatPercentages(percentages);
-  const overallSeverity = SegmentationUtils.calculateOverallSeverity(percentages);
-
-  const getSeverityBadgeColor = () => {
-    const colors = {
-      healthy: 'bg-green-500',
-      mild: 'bg-yellow-500',
-      moderate: 'bg-orange-500',
-      severe: 'bg-red-500'
-    };
-    return colors[overallSeverity];
+interface SegmentationResponse {
+  success: boolean;
+  masks: {
+    rust: string | null;
+    scab: string | null;
+    healthy: string | null;
   };
-
-  const getSeverityLabel = () => {
-    const labels = {
-      healthy: 'Saludable',
-      mild: 'Leve',
-      moderate: 'Moderado',
-      severe: 'Severo'
-    };
-    return labels[overallSeverity];
+  overlayImage: string | null;
+  percentages: {
+    healthy: number;
+    rust: number;
+    scab: number;
+    background: number;
   };
+  contours: {
+    rust: ContourData[];
+    scab: ContourData[];
+  };
+  processingTime: number;
+  error?: string;
+}
 
-  const getCurrentImage = (): string => {
-    switch (viewMode) {
-      case 'original':
-        return originalImage;
-      case 'overlay':
-        return overlayImage || originalImage;
-      case 'rust':
-        return masks.rust || originalImage;
-      case 'scab':
-        return masks.scab || originalImage;
-      case 'healthy':
-        return masks.healthy || originalImage;
-      default:
-        return originalImage;
+// ============================================================
+// GET - Health Check
+// ============================================================
+
+export async function GET(): Promise<NextResponse> {
+  let sharpAvailable = false;
+  try {
+    await sharp({
+      create: { width: 1, height: 1, channels: 3, background: { r: 0, g: 0, b: 0 } }
+    }).png().toBuffer();
+    sharpAvailable = true;
+  } catch (error) {
+    console.error(error);
+  }
+
+  return NextResponse.json({
+    status: 'ok',
+    service: 'Spatial Leaf Segmentation Service',
+    sharpAvailable,
+    timestamp: new Date().toISOString()
+  });
+}
+
+// ============================================================
+// POST - Segmentación de imagen
+// ============================================================
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  console.log('🚀 API Segment: Iniciando con Filtrado Espacial');
+  const startTime = Date.now();
+
+  try {
+    const body = await request.json();
+    if (!body.image) return NextResponse.json({ success: false, error: 'No image' }, { status: 400 });
+
+    const base64Data = body.image.replace(/^data:image\/\w+;base64,/, '');
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    // 1. Preprocesamiento: Redimensionar
+    const maxDim = 400;
+    const resizedImage = sharp(imageBuffer)
+      .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
+
+    const { data: rgbData, info } = await resizedImage
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const width = info.width;
+    const height = info.height;
+    const totalPixels = width * height;
+
+    // ============================================================
+    // PASO CRÍTICO: DETECTAR LA HOJA PRINCIPAL (MÁSCARA BINARIA)
+    // ============================================================
+    // Esto crea un "recorte" digital de la hoja más grande, ignorando el fondo verde.
+    const mainLeafMask = getMainLeafMask(rgbData, width, height);
+
+    // ============================================================
+    // CLASIFICACIÓN DE ENFERMEDADES (Solo dentro de la máscara)
+    // ============================================================
+
+    let leafPixels = 0;
+    let healthyPixels = 0;
+    let rustPixels = 0;
+    let scabPixels = 0;
+
+    const healthyMaskData = Buffer.alloc(totalPixels);
+    const rustMaskData = Buffer.alloc(totalPixels);
+    const scabMaskData = Buffer.alloc(totalPixels);
+    const overlayData = Buffer.alloc(totalPixels * 3);
+
+    for (let i = 0; i < totalPixels; i++) {
+      const r = rgbData[i * 3];
+      const g = rgbData[i * 3 + 1];
+      const b = rgbData[i * 3 + 2];
+
+      // Copiar imagen base al overlay
+      overlayData[i * 3] = r;
+      overlayData[i * 3 + 1] = g;
+      overlayData[i * 3 + 2] = b;
+
+      // SI NO ES PARTE DE LA HOJA PRINCIPAL, IGNORAR E IR AL SIGUIENTE
+      if (mainLeafMask[i] === 0) {
+        // Oscurecer el fondo visualmente para que el usuario vea qué se descartó
+        overlayData[i * 3] = Math.round(r * 0.3);
+        overlayData[i * 3 + 1] = Math.round(g * 0.3);
+        overlayData[i * 3 + 2] = Math.round(b * 0.3);
+        continue;
+      }
+
+      leafPixels++;
+      const [h, s, v] = rgbToHsv(r, g, b);
+
+      // --- LÓGICA DE DETECCIÓN DE ENFERMEDADES ---
+
+      // 1. ROYA (RUST)
+      // Ampliado para incluir rojos oscuros/púrpuras (Test_149) y naranjas vivos
+      const isRust = (
+        // Naranja / Amarillo Vivos
+        (h >= 5 && h <= 40 && s >= 50 && v >= 60) ||
+        // Rojos oscuros / Púrpuras (H > 160 o H < 10) con saturación media
+        ((h >= 160 || h <= 10) && s >= 40 && v >= 40 && v <= 200)
+      );
+
+      // 2. SARNA (SCAB)
+      // Manchas oscuras, marrones o grisáceas, mate.
+      const isScab = (
+        !isRust && // Prioridad a Roya
+        v <= 120 && // Debe ser oscuro
+        s >= 10 && // No puramente gris/negro (ruido)
+        (
+            (h >= 10 && h <= 50) || // Marrón
+            (h >= 60 && h <= 150 && s <= 80) // Verde muy oscuro/podrido
+        )
+      );
+
+      if (isRust) {
+        rustMaskData[i] = 255;
+        rustPixels++;
+        // Overlay: Naranja Neón
+        overlayData[i * 3] = 255;
+        overlayData[i * 3 + 1] = 100;
+        overlayData[i * 3 + 2] = 0;
+      } else if (isScab) {
+        scabMaskData[i] = 255;
+        scabPixels++;
+        // Overlay: Magenta (mejor contraste sobre verde oscuro que el marrón)
+        overlayData[i * 3] = 255;
+        overlayData[i * 3 + 1] = 0;
+        overlayData[i * 3 + 2] = 255;
+      } else {
+        healthyMaskData[i] = 255;
+        healthyPixels++;
+        // Overlay: Dejar color original (verde)
+      }
     }
-  };
 
-  return (
-    <div className={`segmentation-viewer ${className}`}>
-      {/* Header con estadísticas */}
-      <div className="mb-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Análisis de Segmentación</h3>
-          <span className={`px-3 py-1 rounded-full text-white text-sm font-medium ${getSeverityBadgeColor()}`}>
-            {getSeverityLabel()}
-          </span>
-        </div>
-        
-        {/* Barras de progreso para porcentajes */}
-        <div className="space-y-2">
-          <PercentageBar 
-            label="Saludable" 
-            value={percentages.healthy} 
-            color="bg-green-500" 
-          />
-          <PercentageBar 
-            label="Roya" 
-            value={percentages.rust} 
-            color="bg-orange-500" 
-          />
-          <PercentageBar 
-            label="Sarna" 
-            value={percentages.scab} 
-            color="bg-amber-800" 
-          />
-        </div>
-        
-        <div className="mt-2 text-xs text-gray-500">
-          Procesado en {processingTime}ms
-        </div>
-      </div>
+    // ============================================================
+    // RESULTADOS Y GENERACIÓN DE IMÁGENES
+    // ============================================================
+    
+    // Calcular porcentajes
+    const percentages = {
+      healthy: leafPixels > 0 ? (healthyPixels / leafPixels) * 100 : 0,
+      rust: leafPixels > 0 ? (rustPixels / leafPixels) * 100 : 0,
+      scab: leafPixels > 0 ? (scabPixels / leafPixels) * 100 : 0,
+      background: ((totalPixels - leafPixels) / totalPixels) * 100
+    };
 
-      {/* Selector de vista */}
-      <div className="flex flex-wrap gap-2 mb-4">
-        <ViewModeButton 
-          active={viewMode === 'original'} 
-          onClick={() => setViewMode('original')}
-        >
-          Original
-        </ViewModeButton>
-        <ViewModeButton 
-          active={viewMode === 'overlay'} 
-          onClick={() => setViewMode('overlay')}
-        >
-          Con Contornos
-        </ViewModeButton>
-        <ViewModeButton 
-          active={viewMode === 'rust'} 
-          onClick={() => setViewMode('rust')}
-          disabled={!masks.rust}
-        >
-          Máscara Roya
-        </ViewModeButton>
-        <ViewModeButton 
-          active={viewMode === 'scab'} 
-          onClick={() => setViewMode('scab')}
-          disabled={!masks.scab}
-        >
-          Máscara Sarna
-        </ViewModeButton>
-        <ViewModeButton 
-          active={viewMode === 'healthy'} 
-          onClick={() => setViewMode('healthy')}
-          disabled={!masks.healthy}
-        >
-          Áreas Sanas
-        </ViewModeButton>
-        <ViewModeButton 
-          active={viewMode === 'split'} 
-          onClick={() => setViewMode('split')}
-        >
-          Comparación
-        </ViewModeButton>
-      </div>
+    // Generar imágenes Base64
+    const [rustB64, scabB64, healthyB64, overlayB64] = await Promise.all([
+      bufferToBase64Image(rustMaskData, width, height, true),
+      bufferToBase64Image(scabMaskData, width, height, true),
+      bufferToBase64Image(healthyMaskData, width, height, true),
+      bufferToBase64Image(overlayData, width, height, false)
+    ]);
 
-      {/* Visualización de imagen */}
-      <div className="relative rounded-lg overflow-hidden bg-black">
-        {viewMode === 'split' ? (
-          <div className="grid grid-cols-2 gap-1">
-            <div className="relative">
-              <img 
-                src={originalImage} 
-                alt="Original" 
-                className="w-full h-auto"
-              />
-              <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded">
-                Original
-              </span>
-            </div>
-            <div className="relative">
-              <img 
-                src={overlayImage || originalImage} 
-                alt="Segmentado" 
-                className="w-full h-auto"
-              />
-              <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded">
-                Segmentado
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="relative">
-            <img 
-              src={getCurrentImage()} 
-              alt={`Vista: ${viewMode}`}
-              className="w-full h-auto"
-            />
-            
-            {/* Overlay de contornos interactivos */}
-            {showContours && viewMode === 'overlay' && (
-              <ContourOverlay 
-                contours={contours} 
-                imageWidth={800} // Ajustar según la imagen real
-                imageHeight={600}
-              />
-            )}
-          </div>
-        )}
-      </div>
+    // Contornos (usando la máscara de enfermedad)
+    const rustContours = analyzeContours(rustMaskData, width, height, leafPixels);
+    const scabContours = analyzeContours(scabMaskData, width, height, leafPixels);
 
-      {/* Toggle para contornos */}
-      {viewMode === 'overlay' && (
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            type="checkbox"
-            id="showContours"
-            checked={showContours}
-            onChange={(e) => setShowContours(e.target.checked)}
-            className="rounded"
-          />
-          <label htmlFor="showContours" className="text-sm text-gray-600">
-            Mostrar información de contornos
-          </label>
-        </div>
-      )}
+    return NextResponse.json({
+      success: true,
+      masks: { rust: rustB64, scab: scabB64, healthy: healthyB64 },
+      overlayImage: overlayB64,
+      percentages,
+      contours: { rust: rustContours, scab: scabContours },
+      processingTime: Date.now() - startTime
+    });
 
-      {/* Leyenda */}
-      <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-        <h4 className="text-sm font-medium mb-2">Leyenda</h4>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-orange-500 rounded" />
-            <span>Roya (Rust)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-amber-800 rounded" />
-            <span>Sarna (Scab)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-green-500 rounded" />
-            <span>Área Saludable</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Detalles de contornos */}
-      {(contours.rust.length > 0 || contours.scab.length > 0) && (
-        <ContourDetails contours={contours} />
-      )}
-    </div>
-  );
+  } catch (error) {
+    console.error('Error:', error);
+    return NextResponse.json({ success: false, error: 'Internal Error' }, { status: 500 });
+  }
 }
 
-// Componente para barra de porcentaje
-function PercentageBar({ 
-  label, 
-  value, 
-  color 
-}: { 
-  label: string; 
-  value: number; 
-  color: string;
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <span className="text-sm w-20">{label}</span>
-      <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-        <div 
-          className={`h-2 rounded-full ${color} transition-all duration-500`}
-          style={{ width: `${Math.min(value, 100)}%` }}
-        />
-      </div>
-      <span className="text-sm w-12 text-right">{value.toFixed(1)}%</span>
-    </div>
-  );
-}
+// ============================================================
+// NUEVA FUNCIÓN: DETECCIÓN DE LA HOJA PRINCIPAL
+// ============================================================
 
-// Botón de modo de vista
-function ViewModeButton({ 
-  children, 
-  active, 
-  onClick, 
-  disabled = false 
-}: { 
-  children: React.ReactNode;
-  active: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`
-        px-3 py-1.5 text-sm rounded-md transition-colors
-        ${active 
-          ? 'bg-blue-600 text-white' 
-          : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+/**
+ * Genera una máscara binaria que contiene SOLO la hoja más grande de la imagen.
+ * Elimina el ruido de fondo desconectado.
+ */
+function getMainLeafMask(rgbData: Buffer, width: number, height: number): Buffer {
+  const totalPixels = width * height;
+  const tempMask = Buffer.alloc(totalPixels); // 0 = fondo, 255 = posible planta
+
+  // 1. FILTRO DE COLOR AMPLIO ("¿Es material vegetal?")
+  // Somos permisivos aquí porque el filtro espacial limpiará el ruido.
+  for (let i = 0; i < totalPixels; i++) {
+    const r = rgbData[i * 3];
+    const g = rgbData[i * 3 + 1];
+    const b = rgbData[i * 3 + 2];
+    const [h, s, v] = rgbToHsv(r, g, b);
+
+    // Definición amplia de "Material de Hoja" (Verde, Amarillo, Naranja, Marrón, Rojo oscuro)
+    // Descartamos: Cielo azul, Blancos quemados, Negros profundos, Grises puros
+    const isGreen = h >= 25 && h <= 100 && s >= 20 && v >= 20;
+    const isBrownOrange = (h >= 5 && h <= 40) || (h >= 160) || (h <= 5); // Rojos/Naranjas
+    const isVegetation = (isGreen || isBrownOrange) && v >= 20 && s >= 15;
+
+    tempMask[i] = isVegetation ? 255 : 0;
+  }
+
+  // 2. ENCONTRAR LA "ISLA" MÁS GRANDE (Connected Components)
+  const visited = new Set<number>();
+  let maxArea = 0;
+  let bestBlob: number[] = [];
+
+  // Optimización: Recorrer con saltos para encontrar blobs rápido, luego rellenar
+  for (let y = 0; y < height; y += 2) { 
+    for (let x = 0; x < width; x += 2) {
+      const idx = y * width + x;
+      if (tempMask[idx] === 255 && !visited.has(idx)) {
+        // Encontramos un pixel de planta no visitado. Inundar para ver el tamaño de la hoja.
+        const blob = floodFill(tempMask, width, height, x, y, visited);
+        
+        if (blob.pixels.length > maxArea) {
+          maxArea = blob.pixels.length;
+          bestBlob = blob.pixels;
         }
-        ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
-      `}
-    >
-      {children}
-    </button>
-  );
+      }
+    }
+  }
+
+  // 3. CREAR MÁSCARA FINAL LIMPIA
+  const cleanMask = Buffer.alloc(totalPixels); // Todo a 0 por defecto
+  
+  // Si encontramos una hoja decente (>5% de la imagen), la copiamos
+  // Si es muy pequeña, probablemente no hay hoja y devolvemos negro o todo
+  if (maxArea > (totalPixels * 0.05)) {
+    for (const idx of bestBlob) {
+      cleanMask[idx] = 255;
+    }
+  } else {
+    // Fallback: Si no detectamos nada coherente, devolvemos la máscara sucia original
+    // o dejamos todo vacío. Aquí copiamos la sucia por seguridad.
+    return tempMask;
+  }
+
+  return cleanMask;
 }
 
-// Overlay de contornos
-function ContourOverlay({ 
-  contours, 
-  imageWidth, 
-  imageHeight 
-}: { 
-  contours: SegmentationResult['contours'];
-  imageWidth: number;
-  imageHeight: number;
-}) {
-  const allContours = [
-    ...contours.rust.map(c => ({ ...c, type: 'rust' as const })),
-    ...contours.scab.map(c => ({ ...c, type: 'scab' as const }))
-  ];
+// ============================================================
+// FUNCIONES AUXILIARES (Sin cambios mayores)
+// ============================================================
 
-  return (
-    <div className="absolute inset-0 pointer-events-none">
-      {allContours.map((contour, index) => {
-        const { boundingBox, severity, type } = contour;
-        const borderColor = type === 'rust' ? 'border-orange-500' : 'border-amber-800';
-        const bgColor = severity === 'high' ? 'bg-red-500/20' : severity === 'medium' ? 'bg-orange-500/20' : 'bg-yellow-500/20';
-        
-        // Calcular posición relativa
-        const left = (boundingBox.x / imageWidth) * 100;
-        const top = (boundingBox.y / imageHeight) * 100;
-        const width = (boundingBox.width / imageWidth) * 100;
-        const height = (boundingBox.height / imageHeight) * 100;
-        
-        return (
-          <div
-            key={index}
-            className={`absolute border-2 ${borderColor} ${bgColor} rounded`}
-            style={{
-              left: `${left}%`,
-              top: `${top}%`,
-              width: `${width}%`,
-              height: `${height}%`
-            }}
-          >
-            <span className={`
-              absolute -top-5 left-0 text-xs px-1 rounded
-              ${type === 'rust' ? 'bg-orange-500' : 'bg-amber-800'} text-white
-            `}>
-              {severity}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+  const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm);
+  const delta = max - min;
+  let h = 0, s = 0, v = max;
+
+  if (delta !== 0) {
+    s = delta / max;
+    if (max === rNorm) h = ((gNorm - bNorm) / delta) % 6;
+    else if (max === gNorm) h = (bNorm - rNorm) / delta + 2;
+    else h = (rNorm - gNorm) / delta + 4;
+    h = Math.round(h * 60);
+    if (h < 0) h += 360;
+  }
+  return [Math.round(h / 2), Math.round(s * 255), Math.round(v * 255)];
 }
 
-// Detalles de contornos
-function ContourDetails({ 
-  contours 
-}: { 
-  contours: SegmentationResult['contours'];
-}) {
-  return (
-    <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
-      <h4 className="text-sm font-medium mb-3">Áreas Afectadas Detectadas</h4>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {contours.rust.length > 0 && (
-          <div>
-            <h5 className="text-sm font-medium text-orange-600 mb-2">
-              Roya ({contours.rust.length} áreas)
-            </h5>
-            <div className="space-y-1 text-xs">
-              {contours.rust.slice(0, 5).map((c, i) => (
-                <div key={i} className="flex justify-between">
-                  <span>Área {i + 1}: {c.area.toFixed(0)}px²</span>
-                  <span className={`
-                    px-1.5 rounded
-                    ${c.severity === 'high' ? 'bg-red-200 text-red-800' : 
-                      c.severity === 'medium' ? 'bg-orange-200 text-orange-800' : 
-                      'bg-yellow-200 text-yellow-800'}
-                  `}>
-                    {c.severity}
-                  </span>
-                </div>
-              ))}
-              {contours.rust.length > 5 && (
-                <div className="text-gray-500">
-                  +{contours.rust.length - 5} más...
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        
-        {contours.scab.length > 0 && (
-          <div>
-            <h5 className="text-sm font-medium text-amber-800 mb-2">
-              Sarna ({contours.scab.length} áreas)
-            </h5>
-            <div className="space-y-1 text-xs">
-              {contours.scab.slice(0, 5).map((c, i) => (
-                <div key={i} className="flex justify-between">
-                  <span>Área {i + 1}: {c.area.toFixed(0)}px²</span>
-                  <span className={`
-                    px-1.5 rounded
-                    ${c.severity === 'high' ? 'bg-red-200 text-red-800' : 
-                      c.severity === 'medium' ? 'bg-orange-200 text-orange-800' : 
-                      'bg-yellow-200 text-yellow-800'}
-                  `}>
-                    {c.severity}
-                  </span>
-                </div>
-              ))}
-              {contours.scab.length > 5 && (
-                <div className="text-gray-500">
-                  +{contours.scab.length - 5} más...
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+async function bufferToBase64Image(data: Buffer, width: number, height: number, isMono: boolean) {
+  try {
+    const img = sharp(data, { raw: { width, height, channels: isMono ? 1 : 3 } });
+    const buf = await img.png().toBuffer();
+    return `data:image/png;base64,${buf.toString('base64')}`;
+  } catch (e) { return ''; }
+}
+
+function analyzeContours(mask: Buffer, w: number, h: number, leafPix: number): ContourData[] {
+    const visited = new Set<number>();
+    const contours: ContourData[] = [];
+    for (let i=0; i<w*h; i++) {
+        if(mask[i]===255 && !visited.has(i)) {
+            const region = floodFill(mask, w, h, i%w, Math.floor(i/w), visited);
+            if(region.pixels.length > 10) {
+                const area = region.pixels.length;
+                contours.push({
+                    area, 
+                    centroid: region.centroid, 
+                    boundingBox: region.boundingBox,
+                    severity: (area/leafPix)*100 > 5 ? 'high' : ((area/leafPix)*100 > 1 ? 'medium' : 'low')
+                });
+            }
+        }
+    }
+    return contours.sort((a,b)=>b.area-a.area).slice(0,50);
+}
+
+function floodFill(mask: Buffer, w: number, h: number, startX: number, startY: number, visited: Set<number>) {
+  const pixels: number[] = [];
+  const stack = [[startX, startY]];
+  let minX=startX, maxX=startX, minY=startY, maxY=startY;
+  let sumX=0, sumY=0;
+
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    const idx = y * w + x;
+    if (x<0 || x>=w || y<0 || y>=h || visited.has(idx) || mask[idx] !== 255) continue;
+    
+    visited.add(idx);
+    pixels.push(idx);
+    sumX+=x; sumY+=y;
+    if(x<minX) minX=x; if(x>maxX) maxX=x;
+    if(y<minY) minY=y; if(y>maxY) maxY=y;
+
+    stack.push([x+1,y], [x-1,y], [x,y+1], [x,y-1]);
+  }
+  return { 
+      pixels, 
+      centroid: { x: pixels.length ? Math.round(sumX/pixels.length) : startX, y: pixels.length ? Math.round(sumY/pixels.length) : startY },
+      boundingBox: { x: minX, y: minY, width: maxX-minX+1, height: maxY-minY+1 } 
+  };
 }
