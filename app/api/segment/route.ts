@@ -1,7 +1,6 @@
 /**
  * API Route: /api/segment
- * SOLUCIÓN FINAL: Filtrado por "Componente Conexa Más Grande" (Largest Connected Component)
- * Esto elimina el ruido de fondo verde al quedarse solo con la hoja principal.
+ * SOLUCIÓN FINAL: Filtrado por "Componente Conexa Más Grande" + Crop Central
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -71,7 +70,7 @@ export async function GET(): Promise<NextResponse> {
 // ============================================================
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  console.log('🚀 API Segment: Iniciando con Filtrado Espacial');
+  console.log('🚀 API Segment: Iniciando con Crop Central y Filtrado Espacial');
   const startTime = Date.now();
 
   try {
@@ -81,12 +80,37 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const base64Data = body.image.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(base64Data, 'base64');
 
-    // 1. Preprocesamiento: Redimensionar
-    const maxDim = 400;
-    const resizedImage = sharp(imageBuffer)
+    // ============================================================
+    // 1. PRE-PROCESAMIENTO: CROP CENTER + RESIZE
+    // ============================================================
+    
+    // Instanciar Sharp una vez
+    const originalImage = sharp(imageBuffer);
+    
+    // Obtener dimensiones originales
+    const metadata = await originalImage.metadata();
+    const origWidth = metadata.width || 0;
+    const origHeight = metadata.height || 0;
+
+    // CONFIGURACIÓN DE RECORTE
+    // 0.75 significa que mantenemos el 75% central de la imagen (hace zoom).
+    // Reduce esto (ej. 0.6) para hacer más zoom, o auméntalo (ej. 0.9) para menos zoom.
+    const CROP_SCALE = 0.75; 
+
+    const cropW = Math.floor(origWidth * CROP_SCALE);
+    const cropH = Math.floor(origHeight * CROP_SCALE);
+    const left = Math.floor((origWidth - cropW) / 2);
+    const top = Math.floor((origHeight - cropH) / 2);
+
+    const maxDim = 400; // Tamaño final para procesamiento rápido
+
+    // Aplicar Recorte (Extract) y luego Redimensión (Resize)
+    const processedImage = originalImage
+      .extract({ left: left, top: top, width: cropW, height: cropH }) 
       .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
 
-    const { data: rgbData, info } = await resizedImage
+    // Obtener buffer RGB crudo para análisis manual
+    const { data: rgbData, info } = await processedImage
       .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
@@ -140,11 +164,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // --- LÓGICA DE DETECCIÓN DE ENFERMEDADES ---
 
       // 1. ROYA (RUST)
-      // Ampliado para incluir rojos oscuros/púrpuras (Test_149) y naranjas vivos
+      // Ampliado para incluir rojos oscuros/púrpuras y naranjas vivos
       const isRust = (
         // Naranja / Amarillo Vivos
         (h >= 5 && h <= 40 && s >= 50 && v >= 60) ||
-        // Rojos oscuros / Púrpuras (H > 160 o H < 10) con saturación media
+        // Rojos oscuros / Púrpuras
         ((h >= 160 || h <= 10) && s >= 40 && v >= 40 && v <= 200)
       );
 
@@ -170,7 +194,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       } else if (isScab) {
         scabMaskData[i] = 255;
         scabPixels++;
-        // Overlay: Magenta (mejor contraste sobre verde oscuro que el marrón)
+        // Overlay: Magenta
         overlayData[i * 3] = 255;
         overlayData[i * 3 + 1] = 0;
         overlayData[i * 3 + 2] = 255;
@@ -232,36 +256,30 @@ function getMainLeafMask(rgbData: Buffer, width: number, height: number): Buffer
   const totalPixels = width * height;
   const tempMask = Buffer.alloc(totalPixels); // 0 = fondo, 255 = posible planta
 
-  // 1. FILTRO DE COLOR AMPLIO ("¿Es material vegetal?")
-  // Somos permisivos aquí porque el filtro espacial limpiará el ruido.
+  // 1. FILTRO DE COLOR AMPLIO
   for (let i = 0; i < totalPixels; i++) {
     const r = rgbData[i * 3];
     const g = rgbData[i * 3 + 1];
     const b = rgbData[i * 3 + 2];
     const [h, s, v] = rgbToHsv(r, g, b);
 
-    // Definición amplia de "Material de Hoja" (Verde, Amarillo, Naranja, Marrón, Rojo oscuro)
-    // Descartamos: Cielo azul, Blancos quemados, Negros profundos, Grises puros
     const isGreen = h >= 25 && h <= 100 && s >= 20 && v >= 20;
-    const isBrownOrange = (h >= 5 && h <= 40) || (h >= 160) || (h <= 5); // Rojos/Naranjas
+    const isBrownOrange = (h >= 5 && h <= 40) || (h >= 160) || (h <= 5); 
     const isVegetation = (isGreen || isBrownOrange) && v >= 20 && s >= 15;
 
     tempMask[i] = isVegetation ? 255 : 0;
   }
 
-  // 2. ENCONTRAR LA "ISLA" MÁS GRANDE (Connected Components)
+  // 2. ENCONTRAR LA "ISLA" MÁS GRANDE
   const visited = new Set<number>();
   let maxArea = 0;
   let bestBlob: number[] = [];
 
-  // Optimización: Recorrer con saltos para encontrar blobs rápido, luego rellenar
   for (let y = 0; y < height; y += 2) { 
     for (let x = 0; x < width; x += 2) {
       const idx = y * width + x;
       if (tempMask[idx] === 255 && !visited.has(idx)) {
-        // Encontramos un pixel de planta no visitado. Inundar para ver el tamaño de la hoja.
         const blob = floodFill(tempMask, width, height, x, y, visited);
-        
         if (blob.pixels.length > maxArea) {
           maxArea = blob.pixels.length;
           bestBlob = blob.pixels;
@@ -271,17 +289,13 @@ function getMainLeafMask(rgbData: Buffer, width: number, height: number): Buffer
   }
 
   // 3. CREAR MÁSCARA FINAL LIMPIA
-  const cleanMask = Buffer.alloc(totalPixels); // Todo a 0 por defecto
+  const cleanMask = Buffer.alloc(totalPixels);
   
-  // Si encontramos una hoja decente (>5% de la imagen), la copiamos
-  // Si es muy pequeña, probablemente no hay hoja y devolvemos negro o todo
   if (maxArea > (totalPixels * 0.05)) {
     for (const idx of bestBlob) {
       cleanMask[idx] = 255;
     }
   } else {
-    // Fallback: Si no detectamos nada coherente, devolvemos la máscara sucia original
-    // o dejamos todo vacío. Aquí copiamos la sucia por seguridad.
     return tempMask;
   }
 
@@ -289,7 +303,7 @@ function getMainLeafMask(rgbData: Buffer, width: number, height: number): Buffer
 }
 
 // ============================================================
-// FUNCIONES AUXILIARES (Sin cambios mayores)
+// FUNCIONES AUXILIARES
 // ============================================================
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
