@@ -1,5 +1,14 @@
 # 🌿 Plant Disease Detector
 
+![Next.js](https://img.shields.io/badge/Next.js-14.2-black?style=flat-square&logo=next.js)
+![React](https://img.shields.io/badge/React-18.2-61DAFB?style=flat-square&logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?style=flat-square&logo=typescript)
+![TensorFlow.js](https://img.shields.io/badge/TensorFlow.js-4.17-FF6F00?style=flat-square&logo=tensorflow)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-06B6D4?style=flat-square&logo=tailwindcss)
+![OpenCV](https://img.shields.io/badge/OpenCV--wasm-4.3.0-5C3EE8?style=flat-square&logo=opencv)
+![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=node.js)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
 Aplicación web PWA para la detección de enfermedades en hojas de manzano utilizando **Machine Learning** y **Computer Vision**.
 
 ![Plant Disease Detector](./public/icons/icon-192x192.png)
